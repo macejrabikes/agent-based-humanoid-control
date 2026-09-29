@@ -1,4 +1,4 @@
-# Agent-Based Humanoid Robot Control
+# Agent-Based Humanoid Control
 
 Bakalárska / semestrálna práca na tému:
 
