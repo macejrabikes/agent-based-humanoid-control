@@ -11,7 +11,7 @@ Bakalárska / semestrálna práca na tému:
 - **Študijný program:** Inteligentné systémy
 - **Školiace pracovisko:** Ústav umelej inteligencie (ÚUI)
 - **Vedúci práce:** doc. Ing. Peter Papcun, PhD.
-- **Autor:** Meno Priezvisko
+- **Autor:** Matej Rabik
 
 ## O projekte
 
