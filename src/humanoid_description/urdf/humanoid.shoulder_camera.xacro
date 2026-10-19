@@ -1,0 +1,91 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- Kamera na pravom ramene (pripevnena na torso_link; suradnice v ramci torso_link).
+       Rozmery ako mala akcna kamera: telo 30 (hlbka) x 60 (sirka) x 40 (vyska) mm, 120 g.
+       Vrch trupu nad ramenom je v z = 0.28 m. -->
+  <xacro:property name="cam_x" value="0.015"/>
+  <xacro:property name="cam_y" value="-0.09"/>
+  <xacro:property name="cam_z" value="0.325"/>
+  <xacro:property name="cam_pitch" value="0.12"/>   <!-- mierny sklon nadol [rad] -->
+
+  <material name="shoulder_cam_body"><color rgba="0.08 0.08 0.09 1"/></material>
+  <material name="shoulder_cam_lens"><color rgba="0.02 0.02 0.03 1"/></material>
+  <material name="shoulder_cam_mount"><color rgba="0.55 0.57 0.6 1"/></material>
+
+  <!-- drziak: platnicka na trupe + stlpik -->
+  <link name="shoulder_cam_mount_link">
+    <visual>
+      <origin xyz="0 0 0.002" rpy="0 0 0"/>
+      <geometry><box size="0.05 0.04 0.004"/></geometry>
+      <material name="shoulder_cam_mount"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.0145" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.008" length="0.025"/></geometry>
+      <material name="shoulder_cam_mount"/>
+    </visual>
+    <inertial>
+      <origin xyz="0 0 0.008" rpy="0 0 0"/>
+      <mass value="0.03"/>
+      <inertia ixx="6e-6" ixy="0" ixz="0" iyy="8e-6" iyz="0" izz="9e-6"/>
+    </inertial>
+  </link>
+  <joint name="shoulder_cam_mount_joint" type="fixed">
+    <origin xyz="${cam_x} ${cam_y} 0.28" rpy="0 0 0"/>
+    <parent link="torso_link"/>
+    <child link="shoulder_cam_mount_link"/>
+  </joint>
+
+  <!-- telo kamery; x = smer pohladu -->
+  <link name="shoulder_camera_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.03 0.06 0.04"/></geometry>
+      <material name="shoulder_cam_body"/>
+    </visual>
+    <visual>
+      <origin xyz="0.02 0 0" rpy="0 1.5708 0"/>
+      <geometry><cylinder radius="0.012" length="0.01"/></geometry>
+      <material name="shoulder_cam_lens"/>
+    </visual>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.12"/>
+      <inertia ixx="4.0e-5" ixy="0" ixz="0" iyy="2.5e-5" iyz="0" izz="4.5e-5"/>
+    </inertial>
+  </link>
+  <joint name="shoulder_camera_joint" type="fixed">
+    <origin xyz="0 0 ${cam_z - 0.28}" rpy="0 ${cam_pitch} 0"/>
+    <parent link="shoulder_cam_mount_link"/>
+    <child link="shoulder_camera_link"/>
+  </joint>
+
+  <gazebo reference="shoulder_camera_link">
+    <sensor name="shoulder_camera" type="camera">
+      <always_on>true</always_on>
+      <update_rate>15</update_rate>
+      <topic>chappie/camera/image</topic>
+      <gz_frame_id>shoulder_camera_link</gz_frame_id>
+      <pose>0.026 0 0 0 0 0</pose>
+      <camera>
+        <horizontal_fov>1.396</horizontal_fov>
+        <image>
+          <width>640</width>
+          <height>480</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.05</near>
+          <far>30</far>
+        </clip>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.007</stddev>
+        </noise>
+      </camera>
+    </sensor>
+  </gazebo>
+
+</robot>

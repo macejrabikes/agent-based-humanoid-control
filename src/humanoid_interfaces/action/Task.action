@@ -1,0 +1,11 @@
+# Uloha pre AI agenta, napr. "chod k modremu boxu"
+string task
+---
+bool success
+string status     # ok | cancelled | llm_error | bad_plan | too_many_failures | max_iterations | distance_limit | error | busy
+string summary
+int32 steps
+int32 iterations
+---
+string state
+int32 iteration

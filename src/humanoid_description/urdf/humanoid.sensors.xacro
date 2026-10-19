@@ -1,0 +1,77 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- IMU v panve -->
+  <gazebo reference="imu_in_pelvis">
+    <sensor name="imu_pelvis" type="imu">
+      <always_on>true</always_on>
+      <update_rate>500</update_rate>
+      <topic>imu/pelvis</topic>
+      <gz_frame_id>imu_in_pelvis</gz_frame_id>
+    </sensor>
+  </gazebo>
+
+  <!-- IMU v trupe -->
+  <gazebo reference="imu_in_torso">
+    <sensor name="imu_torso" type="imu">
+      <always_on>true</always_on>
+      <update_rate>500</update_rate>
+      <topic>imu/torso</topic>
+      <gz_frame_id>imu_in_torso</gz_frame_id>
+    </sensor>
+  </gazebo>
+
+  <!-- RGB kamera (RealSense D435) -->
+  <gazebo reference="d435_link">
+    <sensor name="rgb_camera" type="camera">
+      <always_on>true</always_on>
+      <update_rate>10</update_rate>
+      <topic>camera/image</topic>
+      <gz_frame_id>d435_link</gz_frame_id>
+      <camera>
+        <horizontal_fov>1.2</horizontal_fov>
+        <image>
+          <width>424</width>
+          <height>240</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.1</near>
+          <far>10</far>
+        </clip>
+      </camera>
+    </sensor>
+  </gazebo>
+
+  <!-- Lidar (Livox Mid-360) -->
+  <gazebo reference="mid360_link">
+    <sensor name="mid360" type="gpu_lidar">
+      <always_on>true</always_on>
+      <update_rate>10</update_rate>
+      <topic>lidar</topic>
+      <gz_frame_id>mid360_link</gz_frame_id>
+      <lidar>
+        <scan>
+          <horizontal>
+            <samples>360</samples>
+            <resolution>1</resolution>
+            <min_angle>-3.14159</min_angle>
+            <max_angle>3.14159</max_angle>
+          </horizontal>
+          <vertical>
+            <samples>16</samples>
+            <resolution>1</resolution>
+            <min_angle>-0.907</min_angle>
+            <max_angle>0.122</max_angle>
+          </vertical>
+        </scan>
+        <range>
+          <min>0.1</min>
+          <max>40</max>
+          <resolution>0.01</resolution>
+        </range>
+      </lidar>
+    </sensor>
+  </gazebo>
+
+</robot>

@@ -1,0 +1,409 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <ros2_control name="GazeboSimSystem" type="system">
+    <hardware>
+      <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+    </hardware>
+    <joint name="left_hip_pitch_joint">
+      <xacro:if value="$(arg walk_mode)">
+        <command_interface name="effort"/>
+      </xacro:if>
+      <xacro:unless value="$(arg walk_mode)">
+        <command_interface name="position"/>
+      </xacro:unless>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="left_hip_roll_joint">
+      <xacro:if value="$(arg walk_mode)">
+        <command_interface name="effort"/>
+      </xacro:if>
+      <xacro:unless value="$(arg walk_mode)">
+        <command_interface name="position"/>
+      </xacro:unless>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="left_hip_yaw_joint">
+      <xacro:if value="$(arg walk_mode)">
+        <command_interface name="effort"/>
+      </xacro:if>
+      <xacro:unless value="$(arg walk_mode)">
+        <command_interface name="position"/>
+      </xacro:unless>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="left_knee_joint">
+      <xacro:if value="$(arg walk_mode)">
+        <command_interface name="effort"/>
+      </xacro:if>
+      <xacro:unless value="$(arg walk_mode)">
+        <command_interface name="position"/>
+      </xacro:unless>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="left_ankle_pitch_joint">
+      <xacro:if value="$(arg walk_mode)">
+        <command_interface name="effort"/>
+      </xacro:if>
+      <xacro:unless value="$(arg walk_mode)">
+        <command_interface name="position"/>
+      </xacro:unless>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="left_ankle_roll_joint">
+      <xacro:if value="$(arg walk_mode)">
+        <command_interface name="effort"/>
+      </xacro:if>
+      <xacro:unless value="$(arg walk_mode)">
+        <command_interface name="position"/>
+      </xacro:unless>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="right_hip_pitch_joint">
+      <xacro:if value="$(arg walk_mode)">
+        <command_interface name="effort"/>
+      </xacro:if>
+      <xacro:unless value="$(arg walk_mode)">
+        <command_interface name="position"/>
+      </xacro:unless>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="right_hip_roll_joint">
+      <xacro:if value="$(arg walk_mode)">
+        <command_interface name="effort"/>
+      </xacro:if>
+      <xacro:unless value="$(arg walk_mode)">
+        <command_interface name="position"/>
+      </xacro:unless>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="right_hip_yaw_joint">
+      <xacro:if value="$(arg walk_mode)">
+        <command_interface name="effort"/>
+      </xacro:if>
+      <xacro:unless value="$(arg walk_mode)">
+        <command_interface name="position"/>
+      </xacro:unless>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="right_knee_joint">
+      <xacro:if value="$(arg walk_mode)">
+        <command_interface name="effort"/>
+      </xacro:if>
+      <xacro:unless value="$(arg walk_mode)">
+        <command_interface name="position"/>
+      </xacro:unless>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="right_ankle_pitch_joint">
+      <xacro:if value="$(arg walk_mode)">
+        <command_interface name="effort"/>
+      </xacro:if>
+      <xacro:unless value="$(arg walk_mode)">
+        <command_interface name="position"/>
+      </xacro:unless>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="right_ankle_roll_joint">
+      <xacro:if value="$(arg walk_mode)">
+        <command_interface name="effort"/>
+      </xacro:if>
+      <xacro:unless value="$(arg walk_mode)">
+        <command_interface name="position"/>
+      </xacro:unless>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <xacro:unless value="$(arg weld_upper)">
+      <joint name="waist_yaw_joint">
+        <xacro:if value="$(arg walk_mode)">
+          <command_interface name="effort"/>
+        </xacro:if>
+        <xacro:unless value="$(arg walk_mode)">
+          <command_interface name="position"/>
+        </xacro:unless>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+    </xacro:unless>
+    <xacro:unless value="$(arg weld_upper)">
+      <joint name="waist_roll_joint">
+        <xacro:if value="$(arg walk_mode)">
+          <command_interface name="effort"/>
+        </xacro:if>
+        <xacro:unless value="$(arg walk_mode)">
+          <command_interface name="position"/>
+        </xacro:unless>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+    </xacro:unless>
+    <xacro:unless value="$(arg weld_upper)">
+      <joint name="waist_pitch_joint">
+        <xacro:if value="$(arg walk_mode)">
+          <command_interface name="effort"/>
+        </xacro:if>
+        <xacro:unless value="$(arg walk_mode)">
+          <command_interface name="position"/>
+        </xacro:unless>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+    </xacro:unless>
+    <xacro:unless value="$(arg weld_upper)">
+      <joint name="left_shoulder_pitch_joint">
+        <xacro:if value="$(arg walk_mode)">
+          <command_interface name="effort"/>
+        </xacro:if>
+        <xacro:unless value="$(arg walk_mode)">
+          <command_interface name="position"/>
+        </xacro:unless>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+    </xacro:unless>
+    <xacro:unless value="$(arg weld_upper)">
+      <joint name="left_shoulder_roll_joint">
+        <xacro:if value="$(arg walk_mode)">
+          <command_interface name="effort"/>
+        </xacro:if>
+        <xacro:unless value="$(arg walk_mode)">
+          <command_interface name="position"/>
+        </xacro:unless>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+    </xacro:unless>
+    <xacro:unless value="$(arg weld_upper)">
+      <joint name="left_shoulder_yaw_joint">
+        <xacro:if value="$(arg walk_mode)">
+          <command_interface name="effort"/>
+        </xacro:if>
+        <xacro:unless value="$(arg walk_mode)">
+          <command_interface name="position"/>
+        </xacro:unless>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+    </xacro:unless>
+    <xacro:unless value="$(arg weld_upper)">
+      <joint name="left_elbow_joint">
+        <xacro:if value="$(arg walk_mode)">
+          <command_interface name="effort"/>
+        </xacro:if>
+        <xacro:unless value="$(arg walk_mode)">
+          <command_interface name="position"/>
+        </xacro:unless>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+    </xacro:unless>
+    <xacro:unless value="$(arg weld_upper)">
+      <joint name="left_wrist_roll_joint">
+        <xacro:if value="$(arg walk_mode)">
+          <command_interface name="effort"/>
+        </xacro:if>
+        <xacro:unless value="$(arg walk_mode)">
+          <command_interface name="position"/>
+        </xacro:unless>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+    </xacro:unless>
+    <xacro:unless value="$(arg weld_upper)">
+      <joint name="left_wrist_pitch_joint">
+        <xacro:if value="$(arg walk_mode)">
+          <command_interface name="effort"/>
+        </xacro:if>
+        <xacro:unless value="$(arg walk_mode)">
+          <command_interface name="position"/>
+        </xacro:unless>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+    </xacro:unless>
+    <xacro:unless value="$(arg weld_upper)">
+      <joint name="left_wrist_yaw_joint">
+        <xacro:if value="$(arg walk_mode)">
+          <command_interface name="effort"/>
+        </xacro:if>
+        <xacro:unless value="$(arg walk_mode)">
+          <command_interface name="position"/>
+        </xacro:unless>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+    </xacro:unless>
+    <xacro:unless value="$(arg weld_upper)">
+      <joint name="right_shoulder_pitch_joint">
+        <xacro:if value="$(arg walk_mode)">
+          <command_interface name="effort"/>
+        </xacro:if>
+        <xacro:unless value="$(arg walk_mode)">
+          <command_interface name="position"/>
+        </xacro:unless>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+    </xacro:unless>
+    <xacro:unless value="$(arg weld_upper)">
+      <joint name="right_shoulder_roll_joint">
+        <xacro:if value="$(arg walk_mode)">
+          <command_interface name="effort"/>
+        </xacro:if>
+        <xacro:unless value="$(arg walk_mode)">
+          <command_interface name="position"/>
+        </xacro:unless>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+    </xacro:unless>
+    <xacro:unless value="$(arg weld_upper)">
+      <joint name="right_shoulder_yaw_joint">
+        <xacro:if value="$(arg walk_mode)">
+          <command_interface name="effort"/>
+        </xacro:if>
+        <xacro:unless value="$(arg walk_mode)">
+          <command_interface name="position"/>
+        </xacro:unless>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+    </xacro:unless>
+    <xacro:unless value="$(arg weld_upper)">
+      <joint name="right_elbow_joint">
+        <xacro:if value="$(arg walk_mode)">
+          <command_interface name="effort"/>
+        </xacro:if>
+        <xacro:unless value="$(arg walk_mode)">
+          <command_interface name="position"/>
+        </xacro:unless>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+    </xacro:unless>
+    <xacro:unless value="$(arg weld_upper)">
+      <joint name="right_wrist_roll_joint">
+        <xacro:if value="$(arg walk_mode)">
+          <command_interface name="effort"/>
+        </xacro:if>
+        <xacro:unless value="$(arg walk_mode)">
+          <command_interface name="position"/>
+        </xacro:unless>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+    </xacro:unless>
+    <xacro:unless value="$(arg weld_upper)">
+      <joint name="right_wrist_pitch_joint">
+        <xacro:if value="$(arg walk_mode)">
+          <command_interface name="effort"/>
+        </xacro:if>
+        <xacro:unless value="$(arg walk_mode)">
+          <command_interface name="position"/>
+        </xacro:unless>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+    </xacro:unless>
+    <xacro:unless value="$(arg weld_upper)">
+      <joint name="right_wrist_yaw_joint">
+        <xacro:if value="$(arg walk_mode)">
+          <command_interface name="effort"/>
+        </xacro:if>
+        <xacro:unless value="$(arg walk_mode)">
+          <command_interface name="position"/>
+        </xacro:unless>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+    </xacro:unless>
+    <xacro:if value="$(arg with_hands)">
+      <joint name="left_hand_thumb_0_joint">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="left_hand_middle_0_joint">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="left_hand_index_0_joint">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="left_hand_index_1_joint">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="left_hand_middle_1_joint">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="left_hand_thumb_1_joint">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="left_hand_thumb_2_joint">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="right_hand_thumb_0_joint">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="right_hand_middle_0_joint">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="right_hand_index_0_joint">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="right_hand_index_1_joint">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="right_hand_middle_1_joint">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="right_hand_thumb_1_joint">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="right_hand_thumb_2_joint">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+    </xacro:if>
+  </ros2_control>
+  <gazebo>
+    <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <parameters>$(find humanoid_control)/config/controllers.yaml</parameters>
+    </plugin>
+  </gazebo>
+</robot>

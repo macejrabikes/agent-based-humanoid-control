@@ -1,0 +1,34 @@
+poses:
+
+  raise_right_arm:
+    duration: 2.5
+    right_shoulder_pitch_joint: -1.9
+    right_shoulder_roll_joint: -0.3
+    right_elbow_joint: 0.0
+
+  raise_left_arm:
+    duration: 2.5
+    left_shoulder_pitch_joint: -1.9
+    left_shoulder_roll_joint: 0.3
+    left_elbow_joint: 0.0
+
+  raise_both_arms:
+    duration: 2.5
+    left_shoulder_pitch_joint: -1.9
+    left_shoulder_roll_joint: 0.3
+    right_shoulder_pitch_joint: -1.9
+    right_shoulder_roll_joint: -0.3
+
+  arms_forward:
+    duration: 2.5
+    left_shoulder_pitch_joint: -1.5
+    right_shoulder_pitch_joint: -1.5
+
+  arms_down:
+    duration: 2.5
+    left_shoulder_pitch_joint: 0.0
+    left_shoulder_roll_joint: 0.0
+    left_elbow_joint: 0.0
+    right_shoulder_pitch_joint: 0.0
+    right_shoulder_roll_joint: 0.0
+    right_elbow_joint: 0.0

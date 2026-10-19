@@ -1,0 +1,482 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 1000
+    use_sim_time: true
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+    body_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+    upper_body_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+    leg_pid_controller:
+      type: pid_controller/PidController
+    getup_pid_controller:
+      type: pid_controller/PidController
+    hand_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+body_controller:
+  ros__parameters:
+    allow_partial_joints_goal: true
+    joints:
+      - left_hip_pitch_joint
+      - left_hip_roll_joint
+      - left_hip_yaw_joint
+      - left_knee_joint
+      - left_ankle_pitch_joint
+      - left_ankle_roll_joint
+      - right_hip_pitch_joint
+      - right_hip_roll_joint
+      - right_hip_yaw_joint
+      - right_knee_joint
+      - right_ankle_pitch_joint
+      - right_ankle_roll_joint
+      - waist_yaw_joint
+      - waist_roll_joint
+      - waist_pitch_joint
+      - left_shoulder_pitch_joint
+      - left_shoulder_roll_joint
+      - left_shoulder_yaw_joint
+      - left_elbow_joint
+      - left_wrist_roll_joint
+      - left_wrist_pitch_joint
+      - left_wrist_yaw_joint
+      - right_shoulder_pitch_joint
+      - right_shoulder_roll_joint
+      - right_shoulder_yaw_joint
+      - right_elbow_joint
+      - right_wrist_roll_joint
+      - right_wrist_pitch_joint
+      - right_wrist_yaw_joint
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+
+upper_body_controller:
+  ros__parameters:
+    allow_partial_joints_goal: true
+    joints:
+      - waist_yaw_joint
+      - waist_roll_joint
+      - waist_pitch_joint
+      - left_shoulder_pitch_joint
+      - left_shoulder_roll_joint
+      - left_shoulder_yaw_joint
+      - left_elbow_joint
+      - left_wrist_roll_joint
+      - left_wrist_pitch_joint
+      - left_wrist_yaw_joint
+      - right_shoulder_pitch_joint
+      - right_shoulder_roll_joint
+      - right_shoulder_yaw_joint
+      - right_elbow_joint
+      - right_wrist_roll_joint
+      - right_wrist_pitch_joint
+      - right_wrist_yaw_joint
+    command_interfaces:
+      - effort
+    state_interfaces:
+      - position
+      - velocity
+    # moment cez PD (kp, kd); vysoke hodnoty drzia driek a ruky ako pri pevnom modeli z trenovania
+    gains:
+      waist_yaw_joint:
+        p: 200.0
+        i: 0.0
+        d: 10.0
+      waist_roll_joint:
+        p: 200.0
+        i: 0.0
+        d: 10.0
+      waist_pitch_joint:
+        p: 200.0
+        i: 0.0
+        d: 10.0
+      left_shoulder_pitch_joint:
+        p: 60.0
+        i: 0.0
+        d: 2.5
+      left_shoulder_roll_joint:
+        p: 60.0
+        i: 0.0
+        d: 2.5
+      left_shoulder_yaw_joint:
+        p: 60.0
+        i: 0.0
+        d: 2.5
+      left_elbow_joint:
+        p: 60.0
+        i: 0.0
+        d: 1.5
+      left_wrist_roll_joint:
+        p: 10.0
+        i: 0.0
+        d: 0.5
+      left_wrist_pitch_joint:
+        p: 10.0
+        i: 0.0
+        d: 0.5
+      left_wrist_yaw_joint:
+        p: 10.0
+        i: 0.0
+        d: 0.5
+      right_shoulder_pitch_joint:
+        p: 60.0
+        i: 0.0
+        d: 2.5
+      right_shoulder_roll_joint:
+        p: 60.0
+        i: 0.0
+        d: 2.5
+      right_shoulder_yaw_joint:
+        p: 60.0
+        i: 0.0
+        d: 2.5
+      right_elbow_joint:
+        p: 60.0
+        i: 0.0
+        d: 1.5
+      right_wrist_roll_joint:
+        p: 10.0
+        i: 0.0
+        d: 0.5
+      right_wrist_pitch_joint:
+        p: 10.0
+        i: 0.0
+        d: 0.5
+      right_wrist_yaw_joint:
+        p: 10.0
+        i: 0.0
+        d: 0.5
+
+hand_controller:
+  ros__parameters:
+    allow_partial_joints_goal: true
+    joints:
+      - left_hand_thumb_0_joint
+      - left_hand_middle_0_joint
+      - left_hand_index_0_joint
+      - left_hand_index_1_joint
+      - left_hand_middle_1_joint
+      - left_hand_thumb_1_joint
+      - left_hand_thumb_2_joint
+      - right_hand_thumb_0_joint
+      - right_hand_middle_0_joint
+      - right_hand_index_0_joint
+      - right_hand_index_1_joint
+      - right_hand_middle_1_joint
+      - right_hand_thumb_1_joint
+      - right_hand_thumb_2_joint
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+
+leg_pid_controller:
+  ros__parameters:
+    dof_names:
+      - left_hip_pitch_joint
+      - left_hip_roll_joint
+      - left_hip_yaw_joint
+      - left_knee_joint
+      - left_ankle_pitch_joint
+      - left_ankle_roll_joint
+      - right_hip_pitch_joint
+      - right_hip_roll_joint
+      - right_hip_yaw_joint
+      - right_knee_joint
+      - right_ankle_pitch_joint
+      - right_ankle_roll_joint
+    command_interface: effort
+    reference_and_state_interfaces:
+      - position
+      - velocity
+    gains:
+      left_hip_pitch_joint:
+        p: 100.0
+        i: 0.0
+        d: 2.0
+        u_clamp_max: 88.0
+        u_clamp_min: -88.0
+      left_hip_roll_joint:
+        p: 100.0
+        i: 0.0
+        d: 2.0
+        u_clamp_max: 139.0
+        u_clamp_min: -139.0
+      left_hip_yaw_joint:
+        p: 100.0
+        i: 0.0
+        d: 2.0
+        u_clamp_max: 88.0
+        u_clamp_min: -88.0
+      left_knee_joint:
+        p: 150.0
+        i: 0.0
+        d: 4.0
+        u_clamp_max: 139.0
+        u_clamp_min: -139.0
+      left_ankle_pitch_joint:
+        p: 40.0
+        i: 0.0
+        d: 2.0
+        u_clamp_max: 50.0
+        u_clamp_min: -50.0
+      left_ankle_roll_joint:
+        p: 40.0
+        i: 0.0
+        d: 2.0
+        u_clamp_max: 50.0
+        u_clamp_min: -50.0
+      right_hip_pitch_joint:
+        p: 100.0
+        i: 0.0
+        d: 2.0
+        u_clamp_max: 88.0
+        u_clamp_min: -88.0
+      right_hip_roll_joint:
+        p: 100.0
+        i: 0.0
+        d: 2.0
+        u_clamp_max: 139.0
+        u_clamp_min: -139.0
+      right_hip_yaw_joint:
+        p: 100.0
+        i: 0.0
+        d: 2.0
+        u_clamp_max: 88.0
+        u_clamp_min: -88.0
+      right_knee_joint:
+        p: 150.0
+        i: 0.0
+        d: 4.0
+        u_clamp_max: 139.0
+        u_clamp_min: -139.0
+      right_ankle_pitch_joint:
+        p: 40.0
+        i: 0.0
+        d: 2.0
+        u_clamp_max: 50.0
+        u_clamp_min: -50.0
+      right_ankle_roll_joint:
+        p: 40.0
+        i: 0.0
+        d: 2.0
+        u_clamp_max: 50.0
+        u_clamp_min: -50.0
+
+# vstavanie zo zeme (RL politika z mjlab): moment pre vsetkych 29 klbov, kp/kd/limit z trenovania
+getup_pid_controller:
+  ros__parameters:
+    dof_names:
+      - left_hip_pitch_joint
+      - left_hip_roll_joint
+      - left_hip_yaw_joint
+      - left_knee_joint
+      - left_ankle_pitch_joint
+      - left_ankle_roll_joint
+      - right_hip_pitch_joint
+      - right_hip_roll_joint
+      - right_hip_yaw_joint
+      - right_knee_joint
+      - right_ankle_pitch_joint
+      - right_ankle_roll_joint
+      - waist_yaw_joint
+      - waist_roll_joint
+      - waist_pitch_joint
+      - left_shoulder_pitch_joint
+      - left_shoulder_roll_joint
+      - left_shoulder_yaw_joint
+      - left_elbow_joint
+      - left_wrist_roll_joint
+      - left_wrist_pitch_joint
+      - left_wrist_yaw_joint
+      - right_shoulder_pitch_joint
+      - right_shoulder_roll_joint
+      - right_shoulder_yaw_joint
+      - right_elbow_joint
+      - right_wrist_roll_joint
+      - right_wrist_pitch_joint
+      - right_wrist_yaw_joint
+    command_interface: effort
+    reference_and_state_interfaces:
+      - position
+      - velocity
+    gains:
+      left_hip_pitch_joint:
+        p: 40.179
+        i: 0.0
+        d: 2.558
+        u_clamp_max: 88.0
+        u_clamp_min: -88.0
+      left_hip_roll_joint:
+        p: 99.098
+        i: 0.0
+        d: 6.309
+        u_clamp_max: 139.0
+        u_clamp_min: -139.0
+      left_hip_yaw_joint:
+        p: 40.179
+        i: 0.0
+        d: 2.558
+        u_clamp_max: 88.0
+        u_clamp_min: -88.0
+      left_knee_joint:
+        p: 99.098
+        i: 0.0
+        d: 6.309
+        u_clamp_max: 139.0
+        u_clamp_min: -139.0
+      left_ankle_pitch_joint:
+        p: 28.501
+        i: 0.0
+        d: 1.814
+        u_clamp_max: 50.0
+        u_clamp_min: -50.0
+      left_ankle_roll_joint:
+        p: 28.501
+        i: 0.0
+        d: 1.814
+        u_clamp_max: 50.0
+        u_clamp_min: -50.0
+      right_hip_pitch_joint:
+        p: 40.179
+        i: 0.0
+        d: 2.558
+        u_clamp_max: 88.0
+        u_clamp_min: -88.0
+      right_hip_roll_joint:
+        p: 99.098
+        i: 0.0
+        d: 6.309
+        u_clamp_max: 139.0
+        u_clamp_min: -139.0
+      right_hip_yaw_joint:
+        p: 40.179
+        i: 0.0
+        d: 2.558
+        u_clamp_max: 88.0
+        u_clamp_min: -88.0
+      right_knee_joint:
+        p: 99.098
+        i: 0.0
+        d: 6.309
+        u_clamp_max: 139.0
+        u_clamp_min: -139.0
+      right_ankle_pitch_joint:
+        p: 28.501
+        i: 0.0
+        d: 1.814
+        u_clamp_max: 50.0
+        u_clamp_min: -50.0
+      right_ankle_roll_joint:
+        p: 28.501
+        i: 0.0
+        d: 1.814
+        u_clamp_max: 50.0
+        u_clamp_min: -50.0
+      waist_yaw_joint:
+        p: 40.179
+        i: 0.0
+        d: 2.558
+        u_clamp_max: 88.0
+        u_clamp_min: -88.0
+      waist_roll_joint:
+        p: 28.501
+        i: 0.0
+        d: 1.814
+        u_clamp_max: 50.0
+        u_clamp_min: -50.0
+      waist_pitch_joint:
+        p: 28.501
+        i: 0.0
+        d: 1.814
+        u_clamp_max: 50.0
+        u_clamp_min: -50.0
+      left_shoulder_pitch_joint:
+        p: 14.251
+        i: 0.0
+        d: 0.907
+        u_clamp_max: 25.0
+        u_clamp_min: -25.0
+      left_shoulder_roll_joint:
+        p: 14.251
+        i: 0.0
+        d: 0.907
+        u_clamp_max: 25.0
+        u_clamp_min: -25.0
+      left_shoulder_yaw_joint:
+        p: 14.251
+        i: 0.0
+        d: 0.907
+        u_clamp_max: 25.0
+        u_clamp_min: -25.0
+      left_elbow_joint:
+        p: 14.251
+        i: 0.0
+        d: 0.907
+        u_clamp_max: 25.0
+        u_clamp_min: -25.0
+      left_wrist_roll_joint:
+        p: 14.251
+        i: 0.0
+        d: 0.907
+        u_clamp_max: 25.0
+        u_clamp_min: -25.0
+      left_wrist_pitch_joint:
+        p: 16.778
+        i: 0.0
+        d: 1.068
+        u_clamp_max: 5.0
+        u_clamp_min: -5.0
+      left_wrist_yaw_joint:
+        p: 16.778
+        i: 0.0
+        d: 1.068
+        u_clamp_max: 5.0
+        u_clamp_min: -5.0
+      right_shoulder_pitch_joint:
+        p: 14.251
+        i: 0.0
+        d: 0.907
+        u_clamp_max: 25.0
+        u_clamp_min: -25.0
+      right_shoulder_roll_joint:
+        p: 14.251
+        i: 0.0
+        d: 0.907
+        u_clamp_max: 25.0
+        u_clamp_min: -25.0
+      right_shoulder_yaw_joint:
+        p: 14.251
+        i: 0.0
+        d: 0.907
+        u_clamp_max: 25.0
+        u_clamp_min: -25.0
+      right_elbow_joint:
+        p: 14.251
+        i: 0.0
+        d: 0.907
+        u_clamp_max: 25.0
+        u_clamp_min: -25.0
+      right_wrist_roll_joint:
+        p: 14.251
+        i: 0.0
+        d: 0.907
+        u_clamp_max: 25.0
+        u_clamp_min: -25.0
+      right_wrist_pitch_joint:
+        p: 16.778
+        i: 0.0
+        d: 1.068
+        u_clamp_max: 5.0
+        u_clamp_min: -5.0
+      right_wrist_yaw_joint:
+        p: 16.778
+        i: 0.0
+        d: 1.068
+        u_clamp_max: 5.0
+        u_clamp_min: -5.0
