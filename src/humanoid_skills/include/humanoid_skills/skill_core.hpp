@@ -17,7 +17,7 @@
 namespace skills
 {
 
-enum class Kind {Stop, Walk, Turn, Arms, Wait};
+enum class Kind {Stop, Walk, Turn, Arms, Wait, Gesture, Look, Getup};   // SKILLS2_PATCH
 
 struct SkillSpec
 {
@@ -31,6 +31,11 @@ struct SkillSpec
   std::string unit;
   double vmin = 0, vmax = 0, vdef = 0;
   bool to_obstacle = false;      // Walk: chod, kym nie je pred robotom prekazka (lidar)
+  std::string gesture;           // Gesture: nazov gesta
+  double gesture_s = 0;          // (nepouzite)
+  double gesture_ramp = 1.4;     // Gesture: nabeh a navrat ruky [s] (celkova dlzka = hodnota + 2 * nabeh)
+  int arm = 1;                   // Gesture: ktora ruka: 1 = prava, 2 = lava, 3 = obe
+  bool needs_hands = false;      // Gesture: funguje len ak ma robot ruky s prstami (with_hands:=true)
 };
 
 struct Params
@@ -51,6 +56,8 @@ struct Params
 struct Sensors
 {
   bool have_imu = false;
+  bool have_hands = false;   // robot ma prsty (joint_states obsahuje right_hand_thumb_0_joint)
+  double sim_t = -1.0;       // cas simulacie [s] z /joint_states (zaporne = nie je k dispozicii)
   double yaw = 0.0;       // [rad] z IMU
   double gz = -1.0;       // z-zlozka gravitacie v suradniciach panvy (stoji: -1)
   bool have_odom = false;
@@ -74,6 +81,10 @@ struct Output
   bool publish_cmd = false;     // posielat rychlosti na /cmd_vel
   bool send_pose = false;       // jednorazovo poslat pozu ruk
   std::string pose;
+  std::string gesture;          // jednorazovo spustit gesto (meno) - prazdne = nic
+  int gesture_arm = 1;          // ktora ruka: 1 = prava, 2 = lava, 3 = obe
+  double gesture_total = 0;     // celkova dlzka gesta [s]
+  bool send_getup = false;      // jednorazovo spustit vstavanie zo zeme
   bool finished = false;
   Result result;
   double progress = 0.0;
@@ -186,6 +197,54 @@ public:
     s.description = "Zdvihne obe ruky."; add(s);
     s = {}; s.name = "arms_down"; s.kind = K::Arms; s.pose = "arms_down";
     s.description = "Spusti ruky dole."; add(s);
+    s = {}; s.name = "get_up"; s.kind = K::Getup;
+    s.description = "Use when the robot has FALLEN (lies on the floor): it stands up by itself (takes ~10 s). "
+      "All other movement skills are rejected while the robot lies. If it already stands, nothing happens.";
+    add(s);
+    s = {}; s.name = "wave"; s.kind = K::Gesture; s.gesture = "wave"; s.arm = 1; s.gesture_ramp = 1.4;
+    s.has_value = true; s.unit = "s"; s.vmin = 2; s.vmax = 30; s.vdef = 4;
+    s.description = "Waves hello with the RIGHT hand, 'value' = how many seconds to keep waving (default 4, about one wave per second), "
+      "then the arm returns to its original position. Robot must stand with arms down."; add(s);
+    s = {}; s.name = "wave_left"; s.kind = K::Gesture; s.gesture = "wave"; s.arm = 2; s.gesture_ramp = 1.4;
+    s.has_value = true; s.unit = "s"; s.vmin = 2; s.vmax = 30; s.vdef = 4;
+    s.description = "Same as wave but with the LEFT hand ('value' = seconds of waving, default 4)."; add(s);
+    s = {}; s.name = "wave_both"; s.kind = K::Gesture; s.gesture = "wave"; s.arm = 3; s.gesture_ramp = 1.4;
+    s.has_value = true; s.unit = "s"; s.vmin = 2; s.vmax = 30; s.vdef = 4;
+    s.description = "Same as wave but with BOTH hands ('value' = seconds of waving, default 4)."; add(s);
+    s = {}; s.name = "point_forward"; s.kind = K::Gesture; s.gesture = "point_forward"; s.gesture_ramp = 2.0;
+    s.has_value = true; s.unit = "s"; s.vmin = 1; s.vmax = 30; s.vdef = 3;
+    s.description = "Points straight forward with the right arm (index finger out if the robot has hands). 'value' = how many seconds to "
+      "keep pointing (default 3), then the arm returns to its original position. Robot must stand with arms down."; add(s);
+    s = {}; s.name = "thumbs_up"; s.kind = K::Gesture; s.gesture = "thumbs_up"; s.gesture_ramp = 2.0; s.needs_hands = true;
+    s.has_value = true; s.unit = "s"; s.vmin = 1; s.vmax = 30; s.vdef = 3;
+    s.description = "Shows a thumbs up (fist, thumb up) with the right hand in front of the body (approval, 'OK'). 'value' = seconds to "
+      "hold it (default 3). Works ONLY if the robot has hands with fingers, otherwise it is rejected (no_hands). "
+      "Robot must stand with arms down."; add(s);
+    s = {}; s.name = "cheer"; s.kind = K::Gesture; s.gesture = "cheer"; s.gesture_ramp = 1.4;
+    s.has_value = true; s.unit = "s"; s.vmin = 2; s.vmax = 30; s.vdef = 4;
+    s.description = "Cheering (joy, victory): raises BOTH arms high above the head and pumps them up and down. 'value' = seconds of "
+      "cheering (default 4), then the arms return to their original position. Not a greeting - to greet someone use wave."; add(s);
+    s = {}; s.name = "salute"; s.kind = K::Gesture; s.gesture = "salute"; s.gesture_ramp = 1.8;
+    s.has_value = true; s.unit = "s"; s.vmin = 1; s.vmax = 30; s.vdef = 3;
+    s.description = "Military salute with the right hand at the forehead. 'value' = seconds to hold the salute (default 3), "
+      "then the arm returns to its original position. Robot must stand with arms down."; add(s);
+    s = {}; s.name = "clap"; s.kind = K::Gesture; s.gesture = "clap"; s.gesture_ramp = 1.6;
+    s.has_value = true; s.unit = "s"; s.vmin = 2; s.vmax = 30; s.vdef = 4;
+    s.description = "Claps hands in front of the chest (applause, ~1.5 claps per second). 'value' = seconds of clapping (default 4), "
+      "then the arms return to their original position. Robot must stand with arms down."; add(s);
+    s = {}; s.name = "bow"; s.kind = K::Gesture; s.gesture = "bow"; s.gesture_ramp = 2.5;
+    s.has_value = true; s.unit = "s"; s.vmin = 1; s.vmax = 10; s.vdef = 2;
+    s.description = "Bows: leans the upper body forward slowly (about 20 degrees), holds it for 'value' seconds (default 2) and comes back up. "
+      "Use for a polite greeting or thanks. Robot must stand still with arms down."; add(s);
+    s = {}; s.name = "dance"; s.kind = K::Gesture; s.gesture = "dance"; s.gesture_ramp = 1.6;
+    s.has_value = true; s.unit = "s"; s.vmin = 3; s.vmax = 60; s.vdef = 8;
+    s.description = "Dances on the spot: arms pump alternately while the upper body sways left and right. 'value' = seconds of dancing "
+      "(default 8). The feet do not move. Robot must stand with arms down."; add(s);
+    s = {}; s.name = "look_around"; s.kind = K::Look;
+    s.description = "Turns a full circle in 45 degree steps (takes ~30 s) and measures the free distance ahead in 8 directions "
+      "with the LiDAR. The result lists the direction (0 = start direction, + left, - right) and distance of each, and the most open "
+      "direction. The robot ends facing the start direction. Use it to find the way out or to look for walls and openings.";
+    add(s);
     s = {}; s.name = "wait"; s.kind = K::Wait; s.has_value = true; s.unit = "s";
     s.vmin = 0.1; s.vmax = 30; s.vdef = 1.0; s.description = "Pocka dany pocet sekund."; add(s);
     for (auto & k : specs_) {
@@ -244,9 +303,17 @@ public:
     }
     if (spec->kind != Kind::Stop) {
       if (!s.have_imu) {return fail(res, "no_imu", "Nemam data z IMU, neviem posudit stav robota.");}
-      if (s.gz > p_.upright_gz) {
-        return fail(res, "not_upright", "Robot nestoji rovno (lezi alebo je velmi naklonený), pohyb odmietnuty.");
+      if (s.gz > p_.upright_gz && spec->kind != Kind::Getup) {
+        return fail(res, "not_upright",
+          "Robot nestoji rovno (lezi alebo je velmi naklonený), pohyb odmietnuty. Robot has fallen: use the skill get_up first.");
       }
+    }
+    if (spec->kind == Kind::Gesture && arms_up_) {
+      return fail(res, "arms_up", "Ruky su hore - najprv arms_down, potom gesto.");
+    }
+    if (spec->needs_hands && !s.have_hands) {
+      return fail(res, "no_hands", "Gesto '" + name + "' potrebuje robota s prstami (simulacia musi bezat s with_hands:=true). "
+        "The robot has no hands with fingers: this gesture is not possible, use another skill (e.g. wave).");
     }
     if (spec->to_obstacle) {
       if (!s.have_lidar) {
@@ -274,6 +341,13 @@ public:
     y0_ = s.oy;
     odom_used_ = s.have_odom;
     pose_sent_ = false;
+    getup_sent_ = false;
+    gest_total_ = (spec->kind == Kind::Gesture) ? v + 2.0 * spec->gesture_ramp : 0.0;
+    upright_t_ = 0.0;
+    look_k_ = 0;
+    look_target_ = 0.0;
+    look_front_.clear();
+    phase_ = (spec->kind == Kind::Look) ? Phase::Settle : Phase::Move;     // look_around: najprv zmeraj smer 0
     return true;
   }
 
@@ -296,11 +370,14 @@ public:
     Output o;
     if (!active_) {return o;}
     t_ += dt;
-    o.publish_cmd = cur_.kind != Kind::Arms && cur_.kind != Kind::Wait;
+    o.publish_cmd = cur_.kind != Kind::Arms && cur_.kind != Kind::Wait && cur_.kind != Kind::Gesture &&
+      cur_.kind != Kind::Getup;
 
     // pad robota
-    if (cur_.kind != Kind::Stop && s.have_imu && s.gz > p_.fall_gz) {
-      return finish_(o, false, "robot_fell", "Robot sa pocas pohybu prevratil, skill prerušený.", s);
+    if (cur_.kind != Kind::Stop && cur_.kind != Kind::Getup && s.have_imu && s.gz > p_.fall_gz) {
+      arms_up_ = false;
+      return finish_(o, false, "robot_fell",
+        "Robot sa pocas pohybu prevratil, skill prerušený. The robot has fallen: use the skill get_up.", s);
     }
 
     switch (cur_.kind) {
@@ -327,6 +404,36 @@ public:
         break;
       case Kind::Turn:
         turn_(o, s, dt);
+        break;
+      case Kind::Gesture:
+        o.state = "gesture";
+        if (!pose_sent_) {
+          o.gesture = cur_.gesture;
+          o.gesture_arm = cur_.arm;
+          o.gesture_total = gest_total_;
+          pose_sent_ = true;
+          arms_up_ = true;
+          gest_tw_ = t_;
+          gest_t0_ = s.sim_t;
+        }
+        {
+          // cas gesta sa meria v CASE SIMULACIE (rovnako ako ho meria regulator trajektorie), nie v case steny:
+          // ak Gazebo bezi pomalsie ako realny cas, gesto by sa inak skoncilo skor, nez ho ruka dokonci
+          const double wall = t_ - gest_tw_;
+          const double el = (s.sim_t >= 0.0 && gest_t0_ >= 0.0) ? (s.sim_t - gest_t0_) : wall;
+          o.progress = clampd(el / (gest_total_ + 0.8), 0, 1);
+          // trajektoria sa sama vrati do zakladnej polohy (nic dalsie sa neposiela)
+          if (el >= gest_total_ + 0.8 || wall > 4.0 * (gest_total_ + 0.8) + 5.0) {
+            arms_up_ = false;
+            return finish_(o, true, "ok", "Gesto '" + cur_.name + "' hotove, ruky su v povodnej polohe.", s);
+          }
+        }
+        break;
+      case Kind::Look:
+        look_(o, s, dt);
+        break;
+      case Kind::Getup:
+        getup_(o, s, dt);
         break;
     }
     if (!o.finished && cur_.kind != Kind::Stop && t_ > timeout_()) {
@@ -356,6 +463,8 @@ private:
         return 2.0 * value_ / v + 8.0;
       }
       case Kind::Turn: return 2.0 * (value_ * M_PI / 180.0) / p_.turn_rate + 8.0;
+      case Kind::Look: return 90.0;
+      case Kind::Getup: return 35.0;
       default: return 1e9;
     }
   }
@@ -518,6 +627,96 @@ private:
     }
   }
 
+  // ---- SKILLS2_PATCH: vstavanie zo zeme
+  void getup_(Output & o, const Sensors & s, double dt)
+  {
+    o.state = "getting_up";
+    if (!getup_sent_) {
+      if (s.gz < -0.9) {
+        finish_(o, true, "ok", "Robot uz stoji, vstavanie nebolo treba.", s);
+        return;
+      }
+      o.send_getup = true;
+      getup_sent_ = true;
+      upright_t_ = 0.0;
+      return;
+    }
+    upright_t_ = (t_ > 3.0 && s.have_imu && s.gz < -0.9) ? upright_t_ + dt : 0.0;
+    o.progress = clampd(t_ / 15.0, 0, 0.95);
+    if (upright_t_ >= 1.5) {
+      finish_(o, true, "ok", "Robot vstal a stoji. Its position and heading have changed: re-check the camera and LiDAR.", s);
+    } else if (t_ > 30.0) {
+      finish_(o, false, "getup_failed", "Robot sa nepostavil do 30 s (vstavanie zlyhalo).", s);
+    }
+  }
+
+  // ---- SKILLS2_PATCH: rozhliadnutie sa (8 x 45 stupnov, v kazdom smere zmeria vzdialenost pred robotom)
+  void look_(Output & o, const Sensors & s, double dt)
+  {
+    turned_ += wrap_pi(s.yaw - yaw_prev_);
+    yaw_prev_ = s.yaw;
+    const double step = 45.0 * M_PI / 180.0;
+    const double rem = look_target_ - turned_;
+    o.progress = clampd((look_k_ + 0.5) / 9.0, 0, 1);
+    if (phase_ == Phase::Move) {
+      o.state = "looking_around";
+      const bool close = rem <= std::max(0.05, v_cur_ * p_.lag) || rem < 0;
+      if (close) {phase_ = Phase::Settle; settle_t_ = 0.0;}
+      const double wt = std::min(p_.turn_rate, std::sqrt(2.0 * p_.decel * std::max(rem, 0.0)) + 0.08);
+      const double dv = clampd(wt - v_cur_, -p_.decel * dt, p_.accel * dt);
+      v_cur_ = std::max(0.0, v_cur_ + dv);
+    }
+    if (phase_ == Phase::Settle) {
+      o.state = "measuring";
+      v_cur_ = 0.0;
+      settle_t_ += dt;
+    }
+    o.wz = v_cur_;
+    if (phase_ != Phase::Settle || settle_t_ < p_.settle_s + 0.3) {return;}
+    if (rem > 0.07 && corrections_ < 2) {       // otocenie bolo kratke -> dorovnaj
+      ++corrections_;
+      phase_ = Phase::Move;
+      v_cur_ = 0.0;
+      return;
+    }
+    look_front_.push_back(s.have_lidar ? s.lid_front : -1.0);        // vzdialenost pred robotom v tomto smere
+    corrections_ = 0;
+    if (look_k_ >= 8) {
+      look_finish_(o, s);
+      return;
+    }
+    ++look_k_;
+    look_target_ = look_k_ * step;
+    phase_ = Phase::Move;
+    v_cur_ = 0.0;
+  }
+
+  void look_finish_(Output & o, const Sensors & s)
+  {
+    std::ostringstream m;
+    m << "look_around: free distance ahead per direction (0 = start direction, + left, - right): ";
+    double bd = -1.0;
+    for (int k = 0; k < 8; ++k) {
+      int deg = k * 45;
+      if (deg > 180) {deg -= 360;}
+      const double d = look_front_[k];
+      if (d < 0) {m << (k ? ", " : "") << deg << ": no data"; continue;}
+      m << (k ? ", " : "") << deg << ": " << fmt_dist(std::min(d, 10.0)) << " m";
+      bd = std::max(bd, std::min(d, 10.0));
+    }
+    int best = 1000;       // pri remize (rozdiel < 0.3 m) vyhra smer blizsie k pociatocnemu
+    for (int k = 0; k < 8; ++k) {
+      int deg = k * 45;
+      if (deg > 180) {deg -= 360;}
+      if (look_front_[k] >= 0 && std::min(look_front_[k], 10.0) >= bd - 0.3 && std::abs(deg) < std::abs(best)) {best = deg;}
+    }
+    if (bd >= 0 && best != 1000) {
+      m << ". Most open direction: " << best << " deg (" << fmt_dist(bd) << " m)";
+    }
+    m << ". The robot is again facing its start direction.";
+    finish_(o, true, "ok", m.str(), s);
+  }
+
   Params p_;
   std::vector<SkillSpec> specs_;
   SkillSpec cur_;
@@ -527,6 +726,11 @@ private:
   double stuck_t_ = 0, stuck_d0_ = 0;
   double value_ = 0, t_ = 0, v_cur_ = 0, settle_t_ = 0, d_est_ = 0, turned_ = 0;
   double yaw0_ = 0, yaw_prev_ = 0, x0_ = 0, y0_ = 0;
+  bool getup_sent_ = false;
+  double gest_total_ = 0.0, gest_tw_ = 0.0, gest_t0_ = -1.0;    // SKILLS2_PATCH
+  double upright_t_ = 0, look_target_ = 0;
+  int look_k_ = 0;
+  std::vector<double> look_front_;
 };
 
 }  // namespace skills

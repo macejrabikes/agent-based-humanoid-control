@@ -41,6 +41,7 @@ def generate_launch_description():
             os.path.join(gz_share, 'launch', 'gazebo.launch.py')),
         launch_arguments={
             'walk_mode': 'true',
+            'with_hands': LaunchConfiguration('with_hands'),
             'weld_upper': LaunchConfiguration('weld_upper'),
             'world': LaunchConfiguration('world'),
         }.items())
@@ -103,6 +104,8 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'venv_python',
             default_value=os.path.expanduser('~/ros_torch_venv/bin/python')),
+        DeclareLaunchArgument('with_hands', default_value='false',
+                              description='true = robot ma prsty (Dex3)'),
         DeclareLaunchArgument('follow', default_value='true',
                               description='kamera sleduje robota'),
         DeclareLaunchArgument('auto_enable', default_value='true',

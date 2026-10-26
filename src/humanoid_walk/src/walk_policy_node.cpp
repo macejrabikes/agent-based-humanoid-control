@@ -37,6 +37,7 @@
 #include "trajectory_msgs/msg/joint_trajectory.hpp"
 
 #include "g1_policy.hpp"
+#include "walk_mjlab.hpp"
 #include "getup_rl.hpp"
 #include "controller_manager_msgs/srv/switch_controller.hpp"
 
@@ -78,6 +79,8 @@ std::array<double, 3> mul(const Mat3 & m, const std::array<double, 3> & v)
 
 class WalkPolicyNode : public rclcpp::Node
 {
+  enum class HybState {kStand, kRamp, kWalk};      // WALK_HYBRID
+
 public:
   WalkPolicyNode()
   : Node("walk_policy",
@@ -90,6 +93,33 @@ public:
     }
     policy_.load(weights);
 
+    // WALK_HYBRID: walk_backend = hybrid (stanie v8 + stara chodza, predvolene) | classic (len stara chodza)
+    use_hybrid_ = declare_parameter<std::string>("walk_backend", "hybrid") != "classic";
+    if (use_hybrid_) {
+      std::string sw = declare_parameter<std::string>("stand_weights_file", "");
+      if (sw.empty()) {
+        sw = ament_index_cpp::get_package_share_directory("humanoid_walk") + "/config/walk_mjlab.bin";
+      }
+      walk_mjlab_.load(sw);
+    }
+    stand_after_ = declare_parameter<double>("stand_after", 1.5);          // po kolkych s bez prikazu sa prepne na stanie
+    ramp_s_ = declare_parameter<double>("stand_to_walk_s", 0.5);           // prechod stanie -> start chodze [s]
+    stand_blend_s_ = declare_parameter<double>("walk_to_stand_s", 0.3);    // prechod chodza -> stanie [s]
+    cmd_dead_ = declare_parameter<double>("cmd_deadband", 0.05);
+    {
+      // zisky regulatora nohy (musia sediet s controllers.yaml) a zisky politiky stania (mjlab)
+      const auto okp = declare_parameter<std::vector<double>>("ctrl_kp", {100, 100, 100, 150, 40, 40});
+      const auto okd = declare_parameter<std::vector<double>>("ctrl_kd", {2, 2, 2, 4, 2, 2});
+      const double mkp[6] = {40.179, 99.098, 40.179, 99.098, 28.501, 28.501};
+      const double mkd[6] = {2.558, 6.309, 2.558, 6.309, 1.814, 1.814};
+      if (okp.size() != 6 || okd.size() != 6) {throw std::runtime_error("ctrl_kp / ctrl_kd: treba 6 hodnot");}
+      for (int i = 0; i < kN; ++i) {
+        const int j = i % 6;
+        stand_kratio_[i] = static_cast<float>(mkp[j] / okp[j]);
+        stand_dratio_[i] = static_cast<float>((mkd[j] - okd[j]) / okd[j]);
+      }
+    }
+
     const auto def = declare_parameter<std::vector<double>>(
       "default_angles", {-0.1, 0.0, 0.0, 0.3, -0.2, 0.0, -0.1, 0.0, 0.0, 0.3, -0.2, 0.0});
     const auto cs = declare_parameter<std::vector<double>>("cmd_scale", {2.0, 2.0, 0.25});
@@ -100,6 +130,8 @@ public:
     for (int i = 0; i < kN; ++i) {default_[i] = static_cast<float>(def[i]);}
     for (int i = 0; i < 3; ++i) {cmd_scale_[i] = cs[i];}
     R_p_i_ = rpy_to_mat(rpy[0], rpy[1], rpy[2]);
+    hold_pose_ = default_;
+    if (use_hybrid_) {for (int i = 0; i < kN; ++i) {hold_pose_[i] = humanoid_walk::walk_mjlab::kDefault[i];}}
 
     ang_vel_scale_ = declare_parameter<double>("ang_vel_scale", 0.25);
     dof_pos_scale_ = declare_parameter<double>("dof_pos_scale", 1.0);
@@ -128,7 +160,8 @@ public:
       "/imu/pelvis", rclcpp::SensorDataQoS(),
       [this](sensor_msgs::msg::Imu::ConstSharedPtr m) {imu_ = *m; have_imu_ = true;});
     // --- drzanie miesta
-    hold_enabled_ = declare_parameter<bool>("hold_position", true);
+    // v hybride robot stoji sam; korekcia polohy by ho nutila kracat
+    hold_enabled_ = declare_parameter<bool>("hold_position", !use_hybrid_);
     hold_kp_ = declare_parameter<double>("hold_kp", 1.0);
     hold_kv_ = declare_parameter<double>("hold_kv", 1.0);
     hold_max_ = declare_parameter<double>("hold_max", 0.5);
@@ -165,7 +198,7 @@ public:
     rl_upper_ctrl_ = declare_parameter<std::string>("getup_rl_upper_controller", "upper_body_controller");
     rl_jsb_ = declare_parameter<std::string>("getup_rl_broadcaster", "joint_state_broadcaster");
     rl_arm_phase_ = declare_parameter<double>("getup_rl_arm_phase", 1.5);         // ruky dole po postaveni [s]
-    rl_handoff_blend_ = declare_parameter<double>("getup_rl_handoff_blend", 0.1); // prelinanie na chodzu [s]
+    rl_handoff_blend_ = declare_parameter<double>("getup_rl_handoff_blend", 0.4); // prelinanie na chodzu [s]
     rl_tilt_ = declare_parameter<double>("getup_rl_handoff_tilt", 0.10);   // max. |gx|,|gy| pri odovzdani
     rl_wait_ = declare_parameter<double>("getup_rl_wait", 4.0);            // ako dlho cakat na rovny trup [s]
     declare_parameter<bool>("getup_rl_auto_walk", true);                   // false = po vstani drzi RL, chodzu zapnes sam
@@ -176,7 +209,8 @@ public:
 
     timer_ = create_timer(std::chrono::duration<double>(dt), [this]() {step();});
     RCLCPP_INFO(get_logger(),
-      "walk_policy (C++): perioda %.3f s, politika VYPNUTA (drzim vychodiskovu pozu)", dt);
+      "walk_policy (C++, %s): perioda %.3f s, politika VYPNUTA (drzim vychodiskovu pozu)",
+      use_hybrid_ ? "hybrid" : "classic", dt);
   }
 
 private:
@@ -740,11 +774,123 @@ private:
 
   void publish_targets(const std::array<float, kN> & target)
   {
+    std::array<float, kN> zero{};
+    publish_ref(target, zero);
+  }
+
+  void publish_ref(const std::array<float, kN> & target, const std::array<float, kN> & dot)
+  {
+    last_target_ = target;
     control_msgs::msg::MultiDOFCommand msg;
     msg.dof_names = kLegOrder;
     msg.values.assign(target.begin(), target.end());
-    msg.values_dot.assign(kN, 0.0);
+    msg.values_dot.assign(dot.begin(), dot.end());
     ref_pub_->publish(msg);
+  }
+
+  // ------------------------------------------------------------ WALK_HYBRID
+  // Stavy: kStand (politika v8, stoji bez krokov) -> kRamp (nohy do vychodiskovej polohy starej chodze)
+  //        -> kWalk (stara chodza, motion.pt) -> po case bez prikazu naspat kStand.
+
+  // Politika stania ma ine zisky PD nez regulator nohy. Aby regulator vyvinul rovnaky moment:
+  //   ref = q + (kp_politika / kp_regulator) * (ciel - q),   ref_dot = -((kd_politika - kd_reg) / kd_reg) * dq
+  void step_stand(const std::array<double, 3> & gravity, const std::array<double, 3> & omega)
+  {
+    namespace wm = humanoid_walk::walk_mjlab;
+    float obs[wm::kObs];
+    for (int i = 0; i < 3; ++i) {
+      obs[i] = static_cast<float>(omega[i]);
+      obs[3 + i] = static_cast<float>(gravity[i]);
+      obs[6 + i] = 0.0f;                           // prikaz 0 = stoj
+    }
+    for (int i = 0; i < kN; ++i) {
+      obs[9 + i] = q_[i] - wm::kDefault[i];
+      obs[9 + kN + i] = dq_[i];
+      obs[9 + 2 * kN + i] = mj_action_[i];
+    }
+    float act[kN];
+    walk_mjlab_.forward(obs, act);
+    for (int i = 0; i < kN; ++i) {
+      if (!std::isfinite(act[i])) {
+        RCLCPP_WARN(get_logger(), "Politika stania vratila nekonecne hodnoty, preskakujem");
+        return;
+      }
+    }
+    std::array<float, kN> ref, dot;
+    for (int i = 0; i < kN; ++i) {
+      mj_action_[i] = act[i];
+      const float qt = wm::kDefault[i] + wm::kScale[i] * act[i];
+      ref[i] = q_[i] + stand_kratio_[i] * (qt - q_[i]);
+      dot[i] = -stand_dratio_[i] * dq_[i];
+    }
+    if (handoff_left_ > 0) {   // plynuly prechod z predchadzajuceho cieľa
+      const float a = static_cast<float>(handoff_n_ - handoff_left_) / handoff_n_;
+      for (int i = 0; i < kN; ++i) {
+        ref[i] = handoff_hold_[i] * (1.0f - a) + ref[i] * a;
+        dot[i] *= a;
+      }
+      --handoff_left_;
+    }
+    publish_ref(ref, dot);
+  }
+
+  // true = tento krok vybavil hybrid (stanie / prechod); false = ide stara chodza (pokracuje step())
+  bool hybrid_step(const std::array<double, 3> & gravity, const std::array<double, 3> & omega, double phase)
+  {
+    const double dt = 0.02;
+    if (step_counter_ - hyb_last_step_ > 1) {          // politika predtym nebezala
+      hyb_state_ = HybState::kStand;
+      hyb_idle_ = 0.0;
+      mj_action_.fill(0.0f);
+    }
+    hyb_last_step_ = step_counter_;
+    const bool active = std::fabs(cmd_[0]) > cmd_dead_ || std::fabs(cmd_[1]) > cmd_dead_ ||
+      std::fabs(cmd_[2]) > 2.0 * cmd_dead_;
+
+    if (hyb_state_ == HybState::kStand && active) {
+      hyb_state_ = HybState::kRamp;
+      hyb_ramp_t_ = 0.0;
+      ramp_from_ = q_;
+      handoff_left_ = 0;
+      RCLCPP_INFO(get_logger(), "Hybrid: prikaz prisiel, zacinam chodzu");
+    } else if (hyb_state_ == HybState::kWalk) {
+      hyb_idle_ = active ? 0.0 : hyb_idle_ + dt;
+      if (hyb_idle_ >= stand_after_) {
+        // obe nohy na zemi: faza chodze 0 az 0.05 a 0.5 az 0.55
+        const bool both_down = std::fmod(phase, 0.5) < 0.06;
+        if (both_down || hyb_idle_ >= stand_after_ + 0.8) {
+          hyb_state_ = HybState::kStand;
+          mj_action_.fill(0.0f);
+          handoff_hold_ = last_target_;
+          handoff_n_ = std::max(1, static_cast<int>(stand_blend_s_ / dt + 0.5));
+          handoff_left_ = handoff_n_;
+          RCLCPP_INFO(get_logger(), "Hybrid: bez prikazu, prepinam na stanie");
+        }
+      }
+    }
+
+    if (hyb_state_ == HybState::kRamp) {
+      hyb_ramp_t_ += dt;
+      const double u = std::min(1.0, hyb_ramp_t_ / std::max(0.05, ramp_s_));
+      const float s = static_cast<float>(u * u * (3.0 - 2.0 * u));
+      std::array<float, kN> t;
+      for (int i = 0; i < kN; ++i) {t[i] = ramp_from_[i] * (1.0f - s) + default_[i] * s;}
+      publish_targets(t);
+      if (u >= 1.0) {
+        hyb_state_ = HybState::kWalk;
+        hyb_idle_ = 0.0;
+        have_t0_ = false;                  // faza chodze od nuly
+        action_.fill(0.0f);
+        policy_.reset();                   // nova pamat LSTM
+        handoff_left_ = 0;
+      }
+      return true;
+    }
+    if (hyb_state_ == HybState::kStand) {
+      step_stand(gravity, omega);
+      return true;
+    }
+    return false;
   }
 
   // ------------------------------------------------------------ hlavny krok
@@ -758,6 +904,7 @@ private:
     }
 
     if (!have_imu_ || !have_joints_) {return;}
+    ++step_counter_;
 
     // watchdog: ak prikazy z klavesnice prestanu chodit, robot sa zastavi
     if (cmd_timeout_ > 0.0 && have_cmd_stamp_ && (now_s() - cmd_stamp_) > cmd_timeout_) {
@@ -781,7 +928,7 @@ private:
     if (fall_ticks_ > 0) {run_fall(); return;}
 
     if (!enabled_) {
-      publish_targets(default_);
+      publish_targets(hold_pose_);
       ++hold_ticks_;
       if (enable_requested_ && hold_ticks_ >= hold_ticks_max_) {
         enable_requested_ = false;
@@ -799,7 +946,7 @@ private:
       enabled_ = false;
       hold_ticks_ = 0;
       RCLCPP_WARN(get_logger(), "Robot sa naklana viac ako ~65 stupnov, politika vypnuta");
-      publish_targets(default_);
+      publish_targets(hold_pose_);
       return;
     }
 
@@ -811,6 +958,7 @@ private:
       imu_.angular_velocity.x, imu_.angular_velocity.y, imu_.angular_velocity.z};
     const auto omega = mul(R_p_i_, wv);
 
+    if (use_hybrid_ && hybrid_step(gravity, omega, phase)) {return;}      // WALK_HYBRID
     std::array<double, 3> cmd_eff = cmd_;
     hold_update(cmd_eff);
 
@@ -891,6 +1039,14 @@ private:
   }
 
   humanoid_walk::G1Policy policy_;
+  // WALK_HYBRID
+  humanoid_walk::WalkMjlab walk_mjlab_;
+  bool use_hybrid_{true};
+  HybState hyb_state_{HybState::kStand};
+  std::array<float, kN> mj_action_{}, hold_pose_{}, last_target_{}, ramp_from_{};
+  std::array<float, kN> stand_kratio_{}, stand_dratio_{};
+  double stand_after_{1.5}, ramp_s_{0.5}, stand_blend_s_{0.3}, cmd_dead_{0.05}, hyb_idle_{0.0}, hyb_ramp_t_{0.0};
+  long step_counter_{0}, hyb_last_step_{-10};
   std::array<float, kN> default_{}, q_{}, dq_{}, action_{};
   std::array<float, kN> q_min_{}, q_max_{}, t_min_{}, t_max_{};
   // drzanie miesta

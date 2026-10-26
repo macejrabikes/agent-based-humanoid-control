@@ -23,6 +23,8 @@ ament_target_dependencies(pose_skills rclcpp std_msgs trajectory_msgs ament_inde
 target_link_libraries(pose_skills yaml-cpp::yaml-cpp)
 
 add_executable(motion_skills src/motion_skills.cpp)
+# SKILLS2_TRAJ
+ament_target_dependencies(motion_skills trajectory_msgs)
 target_include_directories(motion_skills PRIVATE include)
 ament_target_dependencies(motion_skills rclcpp rclcpp_action std_msgs geometry_msgs
   sensor_msgs nav_msgs humanoid_interfaces)

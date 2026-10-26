@@ -20,6 +20,10 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/empty.hpp>
+#include <trajectory_msgs/msg/joint_trajectory.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
+#include <map>
 #include <std_msgs/msg/string.hpp>
 
 #include "humanoid_skills/skill_core.hpp"
@@ -53,6 +57,22 @@ public:
 
     cmd_pub_ = create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
     pose_pub_ = create_publisher<std_msgs::msg::String>("/skills/pose", 10);
+    // SKILLS2_PATCH: gesta (trajektoria rúk) a vstavanie zo zeme
+    gesture_pub_ = create_publisher<trajectory_msgs::msg::JointTrajectory>(
+      declare_parameter<std::string>("upper_topic", "/upper_body_controller/joint_trajectory"), 10);
+    getup_pub_ = create_publisher<std_msgs::msg::Empty>("/chappie/getup", 10);
+    hand_pub_ = create_publisher<trajectory_msgs::msg::JointTrajectory>(
+      declare_parameter<std::string>("hand_topic", "/hand_controller/joint_trajectory"), 10);
+    rest_on_start_ = declare_parameter<bool>("rest_on_start", true);
+    js_sub_ = create_subscription<sensor_msgs::msg::JointState>(
+      "/joint_states", 10, [this](sensor_msgs::msg::JointState::ConstSharedPtr m) {
+        for (size_t i = 0; i < m->name.size() && i < m->position.size(); ++i) {js_[m->name[i]] = m->position[i];}
+        sens_.have_hands = js_.count("right_hand_thumb_0_joint") > 0;
+        if (m->header.stamp.sec > 0 || m->header.stamp.nanosec > 0) {
+          sens_.sim_t = m->header.stamp.sec + 1e-9 * m->header.stamp.nanosec;
+        }
+        maybe_rest_on_start();
+      });
     active_pub_ = create_publisher<std_msgs::msg::Bool>("/skills/active", 10);
     catalog_pub_ = create_publisher<std_msgs::msg::String>(
       "/skills/catalog", rclcpp::QoS(1).transient_local().reliable());
@@ -138,11 +158,12 @@ private:
   {
     refresh_lidar();
     if (!sens_.have_lidar) {return;}
-    char buf[200];
+    char buf[240];
     std::snprintf(buf, sizeof(buf),
-      "{\"front\":%.2f,\"back\":%.2f,\"left\":%.2f,\"right\":%.2f,\"arms_up\":%s}",
+      "{\"front\":%.2f,\"back\":%.2f,\"left\":%.2f,\"right\":%.2f,\"arms_up\":%s,\"upright\":%s}",
       std::min(sens_.lid_front, 10.0), std::min(sens_.lid_back, 10.0),
-      std::min(sens_.lid_left, 10.0), std::min(sens_.lid_right, 10.0), exec_->arms_up() ? "true" : "false");
+      std::min(sens_.lid_left, 10.0), std::min(sens_.lid_right, 10.0), exec_->arms_up() ? "true" : "false",
+      (!sens_.have_imu || sens_.gz < -0.7) ? "true" : "false");
     std_msgs::msg::String s;
     s.data = buf;
     lidar_pub_->publish(s);
@@ -196,6 +217,8 @@ private:
       s.data = out.pose;
       pose_pub_->publish(s);
     }
+    if (!out.gesture.empty()) {publish_gesture(out.gesture, out.gesture_arm, out.gesture_total);}                       // SKILLS2_PATCH
+    if (out.send_getup) {getup_pub_->publish(std_msgs::msg::Empty());}
     if (out.finished) {
       auto result = std::make_shared<SkillAction::Result>();
       fill(*result, out.result);
@@ -220,6 +243,209 @@ private:
     handle_->publish_feedback(fb);
   }
 
+  // ---- SKILLS2_PATCH: gesta rukami (a prstami). Trajektoria ide regulatoru hornej casti (upper_body_controller);
+  // ruka startuje z NAMERANEJ polohy (/joint_states), plynule prejde do zakladnej polohy a na konci je presne v nej.
+  // Pozicie sú v konvencii PRAVEJ ruky (lava = zrkadlo: roll, yaw, wrist_roll s opacnym znamienkom) a overene
+  // doprednou kinematikou G1: elbow = 0 znamena predlaktie kolmo na ramenu, elbow ~1.57 = natiahnuta ruka.
+  struct Pose5 {double p, r, y, e, w;};       // shoulder_pitch, shoulder_roll, shoulder_yaw, elbow, wrist_roll
+  // ZAKLADNA poloha PRAVEJ ruky (rovnaka ako vychodzia poloha pri trenovani politiky chodze); lava = zrkadlo.
+  static constexpr double kRest[5] = {0.2, -0.2, 0.0, 0.6, 0.0};
+
+  static double smooth(double u)
+  {
+    u = std::min(1.0, std::max(0.0, u));
+    return u * u * (3.0 - 2.0 * u);
+  }
+
+  static double gesture_ramp(const std::string & g)           // ako dlho ruka nabieha / sa vracia [s]
+  {
+    if (g == "point_forward" || g == "thumbs_up") {return 2.0;}
+    if (g == "salute") {return 1.8;}
+    if (g == "clap" || g == "dance") {return 1.6;}
+    if (g == "bow") {return 2.5;}
+    return 1.4;
+  }
+
+  using JV = std::vector<std::pair<std::string, double>>;     // klb -> ciel
+
+  static void add_arm(JV & o, const char * side, const Pose5 & p)
+  {
+    const char * parts[5] = {"shoulder_pitch", "shoulder_roll", "shoulder_yaw", "elbow", "wrist_roll"};
+    const double sgn[5] = {1.0, -1.0, -1.0, 1.0, -1.0};      // zrkadlenie pre lavu ruku
+    const double v[5] = {p.p, p.r, p.y, p.e, p.w};
+    const bool left = (side[0] == 'l');
+    for (int i = 0; i < 5; ++i) {o.emplace_back(std::string(side) + "_" + parts[i] + "_joint", left ? v[i] * sgn[i] : v[i]);}
+  }
+
+  // zakladna poloha klbu (ruky: kRest, zrkadlovo pre lavu; driek a ostatne: 0)
+  static double canon_of(const std::string & name)
+  {
+    const char * parts[5] = {"shoulder_pitch", "shoulder_roll", "shoulder_yaw", "elbow", "wrist_roll"};
+    const double sgn[5] = {1.0, -1.0, -1.0, 1.0, -1.0};
+    for (const char * side : {"right", "left"}) {
+      for (int i = 0; i < 5; ++i) {
+        if (name == std::string(side) + "_" + parts[i] + "_joint") {
+          return kRest[i] * ((side[0] == 'l') ? sgn[i] : 1.0);
+        }
+      }
+    }
+    return 0.0;
+  }
+
+  // ciele klbov gesta v case t (poradie klbov je stale rovnake)
+  static JV gesture_pose(const std::string & g, int arm, double t, double T)
+  {
+    const double rp = gesture_ramp(g);
+    const double tau = (t > rp && t < T - rp) ? (t - rp) : 0.0;          // cas vnutri aktivnej casti
+    const bool act = (t > rp && t < T - rp);
+    JV o;
+    if (g == "wave") {
+      const double wig = act ? std::sin(2.0 * M_PI * 1.0 * tau) : 0.0;
+      const Pose5 p{-0.12, -1.57, -1.57, 0.3 + 0.55 * wig, 0.0};          // ruka do strany, predlaktie hore, mavanie v lakti
+      if (arm == 1 || arm == 3) {add_arm(o, "right", p);}
+      if (arm == 2 || arm == 3) {add_arm(o, "left", p);}
+    } else if (g == "cheer") {
+      const double wig = act ? std::sin(2.0 * M_PI * 1.4 * tau) : 0.0;     // ruky vysoko nad hlavou, striedavo pumpuju
+      add_arm(o, "right", {-2.7 + 0.2 * wig, -0.9, 0.0, 1.0 + 0.5 * wig, 0.0});
+      add_arm(o, "left", {-2.7 - 0.2 * wig, -0.9, 0.0, 1.0 - 0.5 * wig, 0.0});
+    } else if (g == "point_forward") {
+      add_arm(o, "right", {-1.62, -0.12, 0.0, 1.5, 0.0});                  // ruka natiahnuta rovno dopredu
+    } else if (g == "thumbs_up") {
+      add_arm(o, "right", {-0.9, -0.3, 0.0, 0.9, 0.6});                    // predlaktie dopredu, palec hore
+    } else if (g == "salute") {
+      add_arm(o, "right", {0.0, -1.43, -1.0, -0.95, 0.0});                 // dlan k celu, lakeť do strany (overene FK)
+    } else if (g == "clap") {
+      // ruky sa striedavo otvaraju (f = 0) a spajaju (f = 1: dlane sa prave dotknu = 0.8 vzdialenosti k plne spojenej polohe);
+      // polohy z FK modelu G1
+      const double f = 0.8 * (act ? 0.5 - 0.5 * std::cos(2.0 * M_PI * 1.5 * tau) : 0.0);
+      const double op[5] = {-0.21, -0.9, 0.1, -0.37, 0.0}, cl[5] = {-0.77, -0.78, 0.68, -0.29, 0.0};
+      const Pose5 p{op[0] + (cl[0] - op[0]) * f, op[1] + (cl[1] - op[1]) * f, op[2] + (cl[2] - op[2]) * f,
+        op[3] + (cl[3] - op[3]) * f, 0.0};
+      add_arm(o, "right", p);
+      add_arm(o, "left", p);
+    } else if (g == "bow") {
+      o.emplace_back("waist_pitch_joint", 0.35);                           // uklon dopredu (limit klbu 0.52)
+    } else if (g == "dance") {
+      const double s1 = act ? std::sin(2.0 * M_PI * 0.9 * tau) : 0.0;
+      const double sw = act ? std::sin(2.0 * M_PI * 0.45 * tau) : 0.0;
+      add_arm(o, "right", {-1.4 + 0.5 * s1, -0.7, 0.0, 1.0 + 0.4 * s1, 0.0});
+      add_arm(o, "left", {-1.4 - 0.5 * s1, -0.7, 0.0, 1.0 - 0.4 * s1, 0.0});
+      o.emplace_back("waist_yaw_joint", 0.35 * sw);                        // pohupovanie bokmi
+    }
+    return o;
+  }
+
+  // arm: 1 = prava, 2 = lava, 3 = obe (len pre wave); T = celkova dlzka vratane nabehu a navratu
+  void publish_gesture(const std::string & g, int arm = 1, double T = 6.0)
+  {
+    const double rp = gesture_ramp(g);
+    trajectory_msgs::msg::JointTrajectory tr;
+    // VZDY sa posiela CELA horna cast (driek + obe ruky); klby mimo gesta idu do zakladnej polohy,
+    // takze po kazdom geste je robot cely v zakladnej polohe (aj keby predchadzajuce gesto nieco nechalo)
+    std::vector<std::string> names = {"waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint"};
+    for (const char * side : {"right", "left"}) {
+      for (const char * part : {"shoulder_pitch", "shoulder_roll", "shoulder_yaw", "elbow", "wrist_roll", "wrist_pitch", "wrist_yaw"}) {
+        names.push_back(std::string(side) + "_" + part + "_joint");
+      }
+    }
+    std::vector<double> meas, canon;
+    for (const auto & nme : names) {
+      tr.joint_names.push_back(nme);
+      canon.push_back(canon_of(nme));
+      const auto it = js_.find(nme);
+      meas.push_back((it != js_.end()) ? it->second : canon.back());
+    }
+    for (double t = 0.1; t <= T + 1e-9; t += 0.1) {
+      trajectory_msgs::msg::JointTrajectoryPoint pt;
+      const double up = smooth(t / rp) * (1.0 - smooth((t - (T - rp)) / rp));
+      const JV tg = gesture_pose(g, arm, t, T);
+      for (size_t k = 0; k < names.size(); ++k) {
+        double target = canon[k];
+        for (const auto & kv : tg) {if (kv.first == names[k]) {target = kv.second;}}
+        const double base = meas[k] + (canon[k] - meas[k]) * smooth(t / rp);   // plynule do zakladnej polohy
+        pt.positions.push_back(base + (target - base) * up);
+      }
+      pt.time_from_start.sec = static_cast<int32_t>(t);
+      pt.time_from_start.nanosec = static_cast<uint32_t>((t - std::floor(t)) * 1e9);
+      tr.points.push_back(pt);
+    }
+    gesture_pub_->publish(tr);
+    if (g == "point_forward" || g == "thumbs_up") {publish_fingers(g, T);}
+    RCLCPP_INFO(get_logger(), "Gesto '%s' (%.1f s, ruka %d)", g.c_str(), T, arm);
+  }
+
+  // obe ruky plynule do zakladnej polohy (pri starte a po zmene)
+  void publish_rest(double dur)
+  {
+    const char * parts[5] = {"shoulder_pitch", "shoulder_roll", "shoulder_yaw", "elbow", "wrist_roll"};
+    const double sgn[5] = {1.0, -1.0, -1.0, 1.0, -1.0};
+    trajectory_msgs::msg::JointTrajectory tr;
+    double meas[10], canon[10];
+    int n = 0;
+    for (const char * side : {"right", "left"}) {
+      for (int i = 0; i < 5; ++i, ++n) {
+        const std::string name = std::string(side) + "_" + parts[i] + "_joint";
+        tr.joint_names.push_back(name);
+        canon[n] = kRest[i] * ((std::string(side) == "left") ? sgn[i] : 1.0);
+        const auto it = js_.find(name);
+        meas[n] = (it != js_.end()) ? it->second : canon[n];
+      }
+    }
+    for (double t = 0.1; t <= dur + 1e-9; t += 0.1) {
+      trajectory_msgs::msg::JointTrajectoryPoint pt;
+      for (int i = 0; i < 10; ++i) {pt.positions.push_back(meas[i] + (canon[i] - meas[i]) * smooth(t / dur));}
+      pt.time_from_start.sec = static_cast<int32_t>(t);
+      pt.time_from_start.nanosec = static_cast<uint32_t>((t - std::floor(t)) * 1e9);
+      tr.points.push_back(pt);
+    }
+    gesture_pub_->publish(tr);
+    RCLCPP_INFO(get_logger(), "Ruky: prechod do zakladnej polohy (%.1f s)", dur);
+  }
+
+  // jednorazovo po starte: ak ruky nie su v zakladnej polohe (po spawne mu visia lubovolne), daj ich tam
+  void maybe_rest_on_start()
+  {
+    if (rest_done_ || !rest_on_start_) {return;}
+    if (std::chrono::duration<double>(std::chrono::steady_clock::now() - t_node0_).count() < 3.0) {return;}
+    const char * parts[5] = {"shoulder_pitch", "shoulder_roll", "shoulder_yaw", "elbow", "wrist_roll"};
+    double dev = 0.0;
+    for (const char * side : {"right", "left"}) {
+      for (int i = 0; i < 5; ++i) {
+        const auto it = js_.find(std::string(side) + "_" + parts[i] + "_joint");
+        if (it == js_.end()) {return;}                            // joint_states este nie su kompletne
+        const double c = kRest[i] * ((std::string(side) == "left" && (i == 1 || i == 2 || i == 4)) ? -1.0 : 1.0);
+        dev = std::max(dev, std::fabs(it->second - c));
+      }
+    }
+    rest_done_ = true;
+    if (dev > 0.12) {publish_rest(3.0);}
+  }
+
+  // prsty PRAVEJ ruky (hand_controller, funguje len pri spusteni simulacie s with_hands:=true)
+  void publish_fingers(const std::string & g, double T)
+  {
+    const char * names[7] = {"thumb_0", "thumb_1", "thumb_2", "index_0", "index_1", "middle_0", "middle_1"};
+    double f[7];
+    if (g == "point_forward") {     // ukazovak natiahnuty, stredny stiahnuty, palec pritlaceny
+      const double q[7] = {0.0, 0.6, -1.3, 0.0, 0.0, 1.5, 1.7};
+      std::copy(q, q + 7, f);
+    } else {                        // thumbs_up: pest (ukazovak, stredny stiahnute), palec vztycen hore
+      const double q[7] = {-1.04, -1.04, 0.0, 1.5, 1.7, 1.5, 1.7};   // thumb_0/1 na limite: palec smeruje hore
+      std::copy(q, q + 7, f);
+    }
+    trajectory_msgs::msg::JointTrajectory tr;
+    for (const char * n : names) {tr.joint_names.push_back(std::string("right_hand_") + n + "_joint");}
+    for (double t = 0.1; t <= T + 1e-9; t += 0.1) {
+      trajectory_msgs::msg::JointTrajectoryPoint pt;
+      const double u = smooth((t - 0.8) / 1.2) * (1.0 - smooth((t - (T - 2.2)) / 1.2));
+      for (int i = 0; i < 7; ++i) {pt.positions.push_back(f[i] * u);}
+      pt.time_from_start.sec = static_cast<int32_t>(t);
+      pt.time_from_start.nanosec = static_cast<uint32_t>((t - std::floor(t)) * 1e9);
+      tr.points.push_back(pt);
+    }
+    hand_pub_->publish(tr);
+  }
+
   static void fill(SkillAction::Result & dst, const skills::Result & src)
   {
     dst.success = src.success;
@@ -242,6 +468,13 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pose_pub_, catalog_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr active_pub_;
+  rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr gesture_pub_;   // SKILLS2_PATCH
+  rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr getup_pub_;
+  rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr hand_pub_;
+  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr js_sub_;
+  std::map<std::string, double> js_;
+  bool rest_done_ = false, rest_on_start_ = true;
+  std::chrono::steady_clock::time_point t_node0_ = std::chrono::steady_clock::now();
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr lidar_sub_;

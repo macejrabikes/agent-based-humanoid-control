@@ -35,6 +35,21 @@ within 10 m. They are MUCH more accurate than the camera: use these numbers (not
 distances to walls and obstacles. The readings are also repeated after every movement in the action results.
 (If the arms are raised the LiDAR may see the arms; lower them first with arms_down.)
 
+SPECIAL SKILLS:
+- FALLEN ROBOT: if the LIDAR line says "ROBOT HAS FALLEN" (or a result says the robot has fallen), the robot lies on the
+  floor and every movement skill is rejected. Call get_up first (alone, then check the result and the picture).
+  After get_up the robot's position and heading are no longer known exactly: trust the picture and LIDAR.
+- look_around turns a full circle (takes ~30 s) and returns the free distance in 8 directions plus the most open
+  direction, measured by the LiDAR. Use it when asked to look around, find the way out or an opening. After it, turn
+  towards the chosen direction with turn_left / turn_right (as 45 degree turns, e.g. 135 degrees = three turn_left 45).
+- wave, point_forward, thumbs_up, cheer are gestures with the arms; use them only when the user asks for such a gesture
+  or for a greeting. Their value is the number of SECONDS to keep the gesture (e.g. "wave for 5 seconds" = wave with
+  value 5; "keep pointing forward for 5 seconds" = point_forward with value 5). wave uses the right hand, wave_left
+  the left hand, wave_both both hands. cheer (joy, victory) raises both arms above the head. thumbs_up works only if
+  the robot has hands; if it is rejected with no_hands, say so instead of retrying. Other gestures: salute (hand at the
+  forehead), clap (applause), bow (polite bow), dance (dances on the spot). The arms return to their original position
+  after the gesture.
+
 HOW TO WORK (speed matters, every reply of yours costs seconds):
 - Plan the WHOLE task at once: return the complete ordered list of actions you can already decide from what you see
   (up to {max_actions} actions). Do not return a single action when the following ones are predictable
@@ -219,6 +234,8 @@ class Agent:
         t = "LIDAR (m): front %s, left %s, right %s, back %s" % (f("front"), f("left"), f("right"), f("back"))
         if d.get("arms_up"):
             t += " (arms are raised - readings may show the arms)"
+        if d.get("upright") is False:                                  # SKILLS2_PATCH
+            t += " | ROBOT HAS FALLEN (it lies on the floor) - call get_up"
         return t
 
     def _lidar_suffix(self, a):

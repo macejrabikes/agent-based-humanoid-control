@@ -180,3 +180,9 @@ venv.bak/
 .webassets-cache
 wheels/
 #   you could uncomment the following to ignore the entire vscode folder
+build/
+install/
+log/
+*.before_*
+__pycache__/
+runs/
