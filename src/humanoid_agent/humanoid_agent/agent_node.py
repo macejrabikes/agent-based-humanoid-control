@@ -23,7 +23,7 @@ from std_srvs.srv import Trigger
 
 from humanoid_interfaces.action import Skill, Task
 
-from humanoid_agent.agent_core import Agent
+from humanoid_agent.agent_core import Agent, draw_ruler
 from humanoid_agent.llm_backends import make_llm
 
 
@@ -95,6 +95,8 @@ class RosCamera:
             from PIL import Image
             im = Image.open(io.BytesIO(data)).convert("RGB")
             im.thumbnail((768, 768))          # mensia snimka = rychlejsia odpoved AI
+            if os.environ.get("CHAPPIE_RULER", "1") != "0":
+                im = draw_ruler(im)           # pravitko 0-100 dole (TT_PATCH)
             out = io.BytesIO()
             im.save(out, format="JPEG", quality=85)
             self.mime = "image/jpeg"

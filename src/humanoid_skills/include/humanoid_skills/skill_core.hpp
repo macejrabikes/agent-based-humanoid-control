@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -17,7 +18,7 @@
 namespace skills
 {
 
-enum class Kind {Stop, Walk, Turn, Arms, Wait, Gesture, Look, Getup};   // SKILLS2_PATCH
+enum class Kind {Stop, Walk, Turn, Arms, Wait, Gesture, Look, Getup, GoTo, Place, Where, Push};   // SKILLS2_PATCH, NAV_PATCH
 
 struct SkillSpec
 {
@@ -50,6 +51,9 @@ struct Params
   double stop_dist = 0.70;     // walk_to_obstacle: zastav, ked je prekazka vpredu blizsie ako toto [m] (od lidaru)
   double block_dist = 0.55;    // walk_*: prekazka v smere pohybu blizsie ako toto -> skill konci 'blocked' [m]
   bool lidar_guard = true;     // zastavit chodzu pred prekazkou (LIDAR_PATCH)
+  double camera_hfov_deg = 80.0;   // TT_PATCH: vodorovny pohlad kamery [st.] (turn_towards)
+  double push_speed = 0.30;    // NAV_PATCH: push_forward - rychlost chodze pri tlaceni [m/s]
+  double goto_tol = 0.15;      // NAV_PATCH: go_to_place - cielom je kruh s tymto polomerom [m]
   double stuck_s = 4.0, stuck_min = 0.15;   // STUCK_PATCH: ak za stuck_s prejde < stuck_min [m], robot stoji o prekazku
 };
 
@@ -62,9 +66,13 @@ struct Sensors
   double gz = -1.0;       // z-zlozka gravitacie v suradniciach panvy (stoji: -1)
   bool have_odom = false;
   double ox = 0.0, oy = 0.0;
+  double oyaw = 0.0;         // NAV_PATCH: natocenie robota v suradniciach odometrie [rad]
   bool have_lidar = false;   // cerstve data z lidaru
   double lid_front = 99, lid_back = 99, lid_left = 99, lid_right = 99;   // najblizsia prekazka v sektore [m], 99 = nic
 };
+
+// NAV_PATCH: zapamatane miesto (suradnice odometrie)
+struct Place {double x = 0, y = 0, yaw = 0;};
 
 struct Result
 {
@@ -106,10 +114,11 @@ inline double clampd(double v, double lo, double hi) {return std::max(lo, std::m
 struct LidarParams
 {
   double floor_z = -0.95;               // body nizsie ako toto (vodorovna vyska od senzora) = podlaha
-  double self_x = 0.22, self_y = 0.35;  // obdlznik okolo senzora = telo a ruky robota, ignoruje sa
+  double self_x = 0.45, self_y = 0.35;  // obdlznik okolo senzora = telo a ruky robota, ignoruje sa (SYM_PATCH: 0.22 -> 0.45, ramena boli vo vzdialenosti 0.35)
   double front_deg = 30, side_lo = 60, side_hi = 120, back_deg = 150;
   double max_range = 10.0;
   double mount_pitch = 0.04;            // sklon senzora voci panve (rpy v URDF) [rad]
+  bool flip = false;                    // SYM_PATCH: senzor je otoceny (roll 180 st.): y a z sa pred vypoctom obratia
   double up_x = 0, up_y = 0, up_z = 1;  // "hore" v suradniciach panvy (z IMU); vyrovna naklon robota pri chodzi
 };
 
@@ -120,6 +129,7 @@ struct LidarSectors
   void add(double x, double y, double z, const LidarParams & p)
   {
     if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {return;}
+    if (p.flip) {y = -y; z = -z;}                  // SYM_PATCH
     ++seen;
     // senzor -> suradnice panvy (sklon pripevnenia) a vodorovna vyska podla IMU (naklon robota)
     const double cp = std::cos(p.mount_pitch), sp = std::sin(p.mount_pitch);
@@ -189,6 +199,12 @@ public:
     s.vmin = 5; s.vmax = 180; s.vdef = 90; s.description = "Otoci sa dolava o dany uhol."; add(s);
     s = {}; s.name = "turn_right"; s.kind = K::Turn; s.sign = -1; s.has_value = true; s.unit = "deg";
     s.vmin = 5; s.vmax = 180; s.vdef = 90; s.description = "Otoci sa doprava o dany uhol."; add(s);
+    s = {}; s.name = "turn_towards"; s.kind = K::Turn; s.has_value = true; s.unit = "%"; s.vmin = 1; s.vmax = 100; s.vdef = 50;
+    s.description = "Turns on the spot so that something you SEE in the camera picture ends up straight ahead. 'value' = the horizontal "
+      "position of the object in the picture in PERCENT, read on the ruler at the bottom of the picture (1 = left edge, 50 = centre, 100 = right edge). "
+      "The camera view is 80 degrees wide, so 90 turns about 34 degrees right, 75 about 23 degrees right and 10 about 34 degrees left. "
+      "Use it before walking to an object you see instead of guessing turn angles; afterwards check the next picture.";
+    add(s);
     s = {}; s.name = "raise_right_arm"; s.kind = K::Arms; s.pose = "raise_right_arm";
     s.description = "Zdvihne pravu ruku."; add(s);
     s = {}; s.name = "raise_left_arm"; s.kind = K::Arms; s.pose = "raise_left_arm";
@@ -240,6 +256,26 @@ public:
     s.has_value = true; s.unit = "s"; s.vmin = 3; s.vmax = 60; s.vdef = 8;
     s.description = "Dances on the spot: arms pump alternately while the upper body sways left and right. 'value' = seconds of dancing "
       "(default 8). The feet do not move. Robot must stand with arms down."; add(s);
+    s = {}; s.name = "push_forward"; s.kind = K::Push; s.has_value = true; s.unit = "m"; s.vmin = 0.2; s.vmax = 3.0; s.vdef = 1.0;
+    s.description = "Pushes an object in front of the robot: both arms are stretched forward at chest height and the robot walks slowly "
+      "forward by 'value' metres (default 1), pushing a light box or similar object ahead of it. First walk_to_obstacle (it stops 0.7 m "
+      "before the object, which is where the hands just touch it), then push_forward. The arms return to their original position afterwards. "
+      "If the robot cannot move (object too heavy or blocked) it stops with status 'blocked'. Takes 10-20 s. Robot must stand with arms down.";
+    add(s);
+    s = {}; s.name = "save_place"; s.kind = K::Place; s.has_value = true; s.unit = "slot"; s.vmin = 1; s.vmax = 9; s.vdef = 1;
+    s.description = "Remembers the robot's CURRENT position and heading in memory slot 'value' (1-9; slot 0 is always the START position). "
+      "Use it to mark a place (e.g. next to an object) so that go_to_place can come back later. You must remember yourself which slot means what.";
+    add(s);
+    s = {}; s.name = "go_to_place"; s.kind = K::GoTo; s.has_value = true; s.unit = "slot"; s.vmin = 0; s.vmax = 9; s.vdef = 0;
+    s.description = "Walks in a straight line to a remembered place: slot 0 = the START position (value 0 = go back to the start), slots 1-9 = places "
+      "stored with save_place. It turns towards the place, walks there and finally turns to the heading the robot had when the place was saved. "
+      "Stops with status 'blocked' if an obstacle is in the way (LiDAR): then go around it with turns and walk_forward and call it again. "
+      "Fails with unknown_place if the slot is empty.";
+    add(s);
+    s = {}; s.name = "where_am_i"; s.kind = K::Where;
+    s.description = "Reports the robot's exact position (x forward, y left, in metres, relative to the START position and start heading) and its heading, "
+      "plus distance and direction to every saved place. Use it to find out where you are or how far a saved place is. It does not move the robot.";
+    add(s);
     s = {}; s.name = "look_around"; s.kind = K::Look;
     s.description = "Turns a full circle in 45 degree steps (takes ~30 s) and measures the free distance ahead in 8 directions "
       "with the LiDAR. The result lists the direction (0 = start direction, + left, - right) and distance of each, and the most open "
@@ -257,6 +293,15 @@ public:
   const std::vector<SkillSpec> & specs() const {return specs_;}
   bool active() const {return active_;}
   bool arms_up() const {return arms_up_;}
+
+  // NAV_PATCH: vychodzia poloha (slot 0) sa ulozi pri prvej odometrii
+  void observe(const Sensors & s)
+  {
+    if (!start_saved_ && s.have_odom) {
+      places_[0] = Place{s.ox, s.oy, s.oyaw};
+      start_saved_ = true;
+    }
+  }
 
   // zoznam skills ako JSON (pre AI agenta)
   std::string catalog_json() const
@@ -315,6 +360,26 @@ public:
       return fail(res, "no_hands", "Gesto '" + name + "' potrebuje robota s prstami (simulacia musi bezat s with_hands:=true). "
         "The robot has no hands with fingers: this gesture is not possible, use another skill (e.g. wave).");
     }
+    if (spec->kind == Kind::Place || spec->kind == Kind::Where || spec->kind == Kind::GoTo || spec->kind == Kind::Push) {
+      if (!s.have_odom) {
+        return fail(res, "no_odom", "Nemam data z odometrie (/chappie/odom), neviem urcit polohu.");
+      }
+    }
+    if ((spec->kind == Kind::GoTo || spec->kind == Kind::Push) && arms_up_) {
+      return fail(res, "arms_up", "Ruky su hore - najprv arms_down.");
+    }
+    if (spec->kind == Kind::Place || spec->kind == Kind::GoTo) {
+      if (std::fabs(v - std::round(v)) > 1e-6) {
+        return fail(res, "invalid_argument", name + ": slot musi byt cele cislo.");
+      }
+      if (spec->kind == Kind::GoTo && places_.find(static_cast<int>(std::lround(v))) == places_.end()) {
+        std::ostringstream m;
+        m << "go_to_place: slot " << std::lround(v) << " is empty. Saved slots:";
+        for (const auto & kv : places_) {m << " " << kv.first;}
+        m << ". Use save_place first (slot 0 = start).";
+        return fail(res, "unknown_place", m.str());
+      }
+    }
     if (spec->to_obstacle) {
       if (!s.have_lidar) {
         return fail(res, "no_lidar", "Nemam cerstve data z lidaru (/lidar/points), neviem hladat prekazku.");
@@ -325,6 +390,12 @@ public:
     }
     cur_ = *spec;
     value_ = v;
+    if (spec->name == "turn_towards") {                 // TT_PATCH: percento obrazka -> uhol (model dierkovej kamery)
+      const double hf = p_.camera_hfov_deg * M_PI / 180.0;
+      const double deg = std::atan((v - 50.0) / 50.0 * std::tan(hf / 2.0)) * 180.0 / M_PI;     // + = predmet je vpravo
+      cur_.sign = (deg > 0) ? -1.0 : 1.0;               // vpravo = zaporne otacanie
+      value_ = std::max(2.0, std::fabs(deg));
+    }
     active_ = true;
     t_ = 0.0;
     started_ = false;
@@ -347,6 +418,26 @@ public:
     look_k_ = 0;
     look_target_ = 0.0;
     look_front_.clear();
+    goto_ph_ = 0;                       // NAV_PATCH
+    w_cur_ = 0.0;
+    goto_prev_d_ = 0.0;
+    push_stage_ = 0;
+    push_ok_ = true;
+    push_status_ = "ok";
+    push_msg_.clear();
+    push_moved_ = 0.0;
+    push_x0_ = push_y0_ = 0.0;
+    if (spec->kind == Kind::GoTo) {
+      const Place & pl = places_[static_cast<int>(std::lround(v))];
+      tx_ = pl.x; ty_ = pl.y; tyaw_ = pl.yaw;
+      goto_d0_ = std::hypot(tx_ - s.ox, ty_ - s.oy);
+      goto_timeout_ = 2.0 * goto_d0_ / p_.walk_speed + 30.0;
+      goto_ph_ = (goto_d0_ < p_.goto_tol) ? 2 : 0;
+      goto_prev_d_ = goto_d0_;
+    }
+    if (spec->kind == Kind::Push) {
+      gest_total_ = (0.5 + v / p_.push_speed * 1.25 + 2.0) + 2.0 * kPushRamp;
+    }
     phase_ = (spec->kind == Kind::Look) ? Phase::Settle : Phase::Move;     // look_around: najprv zmeraj smer 0
     return true;
   }
@@ -435,6 +526,18 @@ public:
       case Kind::Getup:
         getup_(o, s, dt);
         break;
+      case Kind::GoTo:
+        goto_(o, s, dt);
+        break;
+      case Kind::Place:
+        place_(o, s);
+        break;
+      case Kind::Where:
+        where_(o, s);
+        break;
+      case Kind::Push:
+        push_(o, s, dt);
+        break;
     }
     if (!o.finished && cur_.kind != Kind::Stop && t_ > timeout_()) {
       return finish_(o, false, "timeout", "Skill " + cur_.name + " trval prilis dlho.", s);
@@ -465,6 +568,8 @@ private:
       case Kind::Turn: return 2.0 * (value_ * M_PI / 180.0) / p_.turn_rate + 8.0;
       case Kind::Look: return 90.0;
       case Kind::Getup: return 35.0;
+      case Kind::GoTo: return goto_timeout_;
+      case Kind::Push: return gest_total_ * 3.0 + 15.0;
       default: return 1e9;
     }
   }
@@ -476,6 +581,9 @@ private:
       return odom_used_ && s.have_odom ? std::hypot(s.ox - x0_, s.oy - y0_) : d_est_;
     }
     if (cur_.kind == Kind::Turn) {return std::fabs(turned_) * 180.0 / M_PI;}
+    if (cur_.kind == Kind::GoTo || cur_.kind == Kind::Push) {
+      return s.have_odom ? std::hypot(s.ox - x0_, s.oy - y0_) : 0.0;
+    }
     return 0.0;
   }
 
@@ -717,6 +825,203 @@ private:
     finish_(o, true, "ok", m.str(), s);
   }
 
+  // ---- NAV_PATCH: pamat miest, cesta na miesto, tlacenie
+  static constexpr double kPushRamp = 2.0;        // nabeh / navrat rúk pri push_forward [s] (rovnaky ako v motion_skills.cpp)
+
+  static std::string fx(double v, int prec)
+  {
+    std::ostringstream o;
+    o.precision(prec);
+    o << std::fixed << v;
+    return o.str();
+  }
+
+  // poloha v systeme STARTU: x dopredu od vychodzieho smeru, y dolava
+  void rel_(double x, double y, double & rx, double & ry) const
+  {
+    Place st;
+    const auto it = places_.find(0);
+    if (it != places_.end()) {st = it->second;}
+    const double dx = x - st.x, dy = y - st.y, c = std::cos(st.yaw), sn = std::sin(st.yaw);
+    rx = c * dx + sn * dy;
+    ry = -sn * dx + c * dy;
+  }
+
+  double start_yaw_() const
+  {
+    const auto it = places_.find(0);
+    return it != places_.end() ? it->second.yaw : 0.0;
+  }
+
+  std::string pos_text_(double x, double y, double yaw) const
+  {
+    double rx, ry;
+    rel_(x, y, rx, ry);
+    return "x=" + fx(rx, 2) + " m, y=" + fx(ry, 2) + " m, heading " + fx(wrap_pi(yaw - start_yaw_()) * 180.0 / M_PI, 0) + " deg";
+  }
+
+  void place_(Output & o, const Sensors & s)
+  {
+    const int slot = static_cast<int>(std::lround(value_));
+    const bool had = places_.count(slot) > 0;
+    places_[slot] = Place{s.ox, s.oy, s.oyaw};
+    finish_(o, true, "ok", "save_place: place " + std::to_string(slot) + (had ? " overwritten" : " saved") + " at " +
+      pos_text_(s.ox, s.oy, s.oyaw) + " (start frame: x forward, y left; heading + = left). go_to_place " +
+      std::to_string(slot) + " brings the robot back here.", s);
+  }
+
+  void where_(Output & o, const Sensors & s)
+  {
+    std::ostringstream m;
+    m << "where_am_i: robot at " << pos_text_(s.ox, s.oy, s.oyaw) << " (start frame: x forward from the start, y left; "
+      << "heading 0 = start heading, + left).";
+    if (places_.size() > 1 || (places_.size() == 1 && places_.count(0) == 0)) {
+      m << " Saved places (distance, direction relative to the robot's heading: + left, - right):";
+      for (const auto & kv : places_) {
+        const double dx = kv.second.x - s.ox, dy = kv.second.y - s.oy;
+        const double dir = wrap_pi(std::atan2(dy, dx) - s.oyaw) * 180.0 / M_PI;
+        double rx, ry;
+        rel_(kv.second.x, kv.second.y, rx, ry);
+        m << " [" << kv.first << (kv.first == 0 ? " = start" : "") << ": at x=" << fx(rx, 1) << " y=" << fx(ry, 1) << ", ";
+        if (std::hypot(dx, dy) < 0.15) {
+          m << "the robot is here]";
+        } else {
+          m << fx(std::hypot(dx, dy), 1) << " m away, direction " << (dir >= 0 ? "+" : "") << fx(dir, 0) << " deg]";
+        }
+      }
+    }
+    finish_(o, true, "ok", m.str(), s);
+  }
+
+  void goto_(Output & o, const Sensors & s, double dt)
+  {
+    if (!s.have_odom) {
+      finish_(o, false, "no_odom", "Stratil som odometriu, zastavujem.", s);
+      return;
+    }
+    const int slot = static_cast<int>(std::lround(value_));
+    const double dx = tx_ - s.ox, dy = ty_ - s.oy;
+    const double dist = std::hypot(dx, dy);
+    const double herr = wrap_pi(std::atan2(dy, dx) - s.oyaw);        // + = cil je vlavo
+    double vt = 0.0, wt = 0.0;
+    o.progress = clampd(1.0 - dist / std::max(goto_d0_, 0.1), 0.0, 1.0);
+    if (goto_ph_ == 0) {                           // 1) otoc sa smerom k cielu
+      o.state = "turning_to_target";
+      if (dist < p_.goto_tol) {
+        goto_ph_ = 2; settle_t_ = 0.0;
+      } else if (std::fabs(herr) < 0.10) {
+        settle_t_ += dt;
+        if (settle_t_ >= p_.settle_s) {goto_ph_ = 1; stuck_t_ = 0.0; goto_prev_d_ = dist;}
+      } else {
+        settle_t_ = 0.0;
+        wt = clampd(1.2 * herr, -p_.turn_rate, p_.turn_rate);
+      }
+    } else if (goto_ph_ == 1) {                    // 2) chod k cielu a drz smer
+      o.state = "walking_to_target";
+      if (dist < p_.goto_tol) {
+        goto_ph_ = 2; settle_t_ = 0.0;
+      } else {
+        if (p_.lidar_guard && s.have_lidar && !arms_up_ && s.lid_front < p_.block_dist) {
+          finish_(o, false, "blocked", "go_to_place " + std::to_string(slot) + ": obstacle " + fmt_dist(s.lid_front) +
+            " m in front, " + fx(dist, 2) + " m from the place. Go around it (turn, walk_forward) and call go_to_place again.", s);
+          return;
+        }
+        vt = std::min(p_.walk_speed, std::sqrt(2.0 * p_.decel * std::max(dist - 0.5 * p_.goto_tol, 0.0)) + 0.1);
+        wt = clampd(1.5 * herr, -p_.heading_max, p_.heading_max);
+        if (std::fabs(herr) > 0.7 && dist > 0.5) {goto_ph_ = 0; settle_t_ = 0.0;}    // zlý smer -> znova sa otoc
+        if (v_cur_ > 0.2) {
+          stuck_t_ += dt;
+          if (stuck_t_ >= p_.stuck_s) {
+            if (goto_prev_d_ - dist < p_.stuck_min) {
+              finish_(o, false, "blocked", "go_to_place " + std::to_string(slot) + ": the robot does not move (something blocks the way), " +
+                fx(dist, 2) + " m from the place. Go around the obstacle and call go_to_place again.", s);
+              return;
+            }
+            stuck_t_ = 0.0; goto_prev_d_ = dist;
+          }
+        } else {
+          stuck_t_ = 0.0; goto_prev_d_ = dist;
+        }
+      }
+    }
+    if (goto_ph_ == 2) {                           // 3) natoc sa tak, ako stal pri ulozeni miesta
+      o.state = "turning_to_final_heading";
+      const double ferr = wrap_pi(tyaw_ - s.oyaw);
+      if (std::fabs(ferr) < 0.10) {
+        settle_t_ += dt;
+        if (settle_t_ >= p_.settle_s) {
+          finish_(o, true, "ok", "go_to_place " + std::to_string(slot) + ": arrived (" + fx(dist, 2) + " m from the place, heading error " +
+            fx(ferr * 180.0 / M_PI, 0) + " deg). Now at " + pos_text_(s.ox, s.oy, s.oyaw) + ".", s);
+          return;
+        }
+      } else {
+        settle_t_ = 0.0;
+        wt = clampd(1.2 * ferr, -p_.turn_rate, p_.turn_rate);
+      }
+    }
+    v_cur_ += clampd(vt - v_cur_, -p_.decel * dt, p_.accel * dt);
+    w_cur_ += clampd(wt - w_cur_, -p_.accel * dt, p_.accel * dt);
+    o.vx = v_cur_;
+    o.wz = w_cur_;
+  }
+
+  void push_(Output & o, const Sensors & s, double dt)
+  {
+    if (!pose_sent_) {
+      o.gesture = "push";
+      o.gesture_arm = 3;
+      o.gesture_total = gest_total_;
+      pose_sent_ = true;
+      arms_up_ = true;
+      gest_tw_ = t_;
+      gest_t0_ = s.sim_t;
+    }
+    // cas sa meria v case simulacie (rovnako ako trajektoria rúk)
+    const double wall = t_ - gest_tw_;
+    const double el = (s.sim_t >= 0.0 && gest_t0_ >= 0.0) ? (s.sim_t - gest_t0_) : wall;
+    const double t_start = kPushRamp + 0.6, t_end = gest_total_ - kPushRamp - 0.4;
+    double vt = 0.0;
+    if (push_stage_ == 0 && el >= t_start) {
+      push_stage_ = 1; push_x0_ = s.ox; push_y0_ = s.oy; stuck_t_ = 0.0; stuck_d0_ = 0.0;
+    }
+    if (push_stage_ == 1) {
+      o.state = "pushing";
+      push_moved_ = std::hypot(s.ox - push_x0_, s.oy - push_y0_);
+      if (push_moved_ >= value_ - 0.03) {
+        push_stage_ = 2;
+        push_msg_ = "push_forward: pushed " + fx(push_moved_, 2) + " m forward (asked " + fx(value_, 2) +
+          " m). The arms are back in their original position.";
+      } else if (el >= t_end) {
+        push_stage_ = 2; push_ok_ = false; push_status_ = "timeout";
+        push_msg_ = "push_forward: time ran out after " + fx(push_moved_, 2) + " m of " + fx(value_, 2) + " m (simulation is slow?).";
+      } else {
+        vt = std::min(p_.push_speed, std::sqrt(2.0 * p_.decel * std::max(value_ - push_moved_, 0.0)) + 0.05);
+        stuck_t_ += dt;
+        if (stuck_t_ >= 3.0) {
+          if (push_moved_ - stuck_d0_ < 0.2) {
+            push_stage_ = 2; push_ok_ = false; push_status_ = "blocked";
+            push_msg_ = "push_forward: the robot cannot move forward (the object is too heavy or blocked, e.g. against a wall); "
+              "pushed only " + fx(push_moved_, 2) + " m of " + fx(value_, 2) + " m. The arms are back in their original position.";
+          }
+          stuck_t_ = 0.0; stuck_d0_ = push_moved_;
+        }
+      }
+    }
+    if (push_stage_ == 2) {o.state = "arms_returning";}
+    v_cur_ += clampd(vt - v_cur_, -p_.decel * dt, p_.accel * dt);
+    o.vx = v_cur_;
+    o.wz = clampd(p_.heading_kp * wrap_pi(yaw0_ - s.yaw), -p_.heading_max, p_.heading_max);
+    o.progress = clampd(el / (gest_total_ + 0.8), 0, 1);
+    if (el >= gest_total_ + 0.8 || wall > 4.0 * (gest_total_ + 0.8) + 5.0) {
+      arms_up_ = false;
+      if (push_stage_ < 2) {
+        push_ok_ = false; push_status_ = "timeout";
+        push_msg_ = "push_forward: did not finish in time (simulation is slow?).";
+      }
+      finish_(o, push_ok_, push_status_.c_str(), push_msg_, s);
+    }
+  }
+
   Params p_;
   std::vector<SkillSpec> specs_;
   SkillSpec cur_;
@@ -731,6 +1036,14 @@ private:
   double upright_t_ = 0, look_target_ = 0;
   int look_k_ = 0;
   std::vector<double> look_front_;
+  // NAV_PATCH
+  std::map<int, Place> places_;
+  bool start_saved_ = false;
+  int goto_ph_ = 0, push_stage_ = 0;
+  double tx_ = 0, ty_ = 0, tyaw_ = 0, goto_d0_ = 0, goto_timeout_ = 60, goto_prev_d_ = 0, w_cur_ = 0;
+  bool push_ok_ = true;
+  std::string push_status_ = "ok", push_msg_;
+  double push_moved_ = 0, push_x0_ = 0, push_y0_ = 0;
 };
 
 }  // namespace skills

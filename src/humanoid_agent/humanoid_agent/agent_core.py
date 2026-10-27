@@ -41,7 +41,7 @@ SPECIAL SKILLS:
   After get_up the robot's position and heading are no longer known exactly: trust the picture and LIDAR.
 - look_around turns a full circle (takes ~30 s) and returns the free distance in 8 directions plus the most open
   direction, measured by the LiDAR. Use it when asked to look around, find the way out or an opening. After it, turn
-  towards the chosen direction with turn_left / turn_right (as 45 degree turns, e.g. 135 degrees = three turn_left 45).
+  towards the chosen direction with ONE turn_left / turn_right of that angle (e.g. turn_left 135).
 - wave, point_forward, thumbs_up, cheer are gestures with the arms; use them only when the user asks for such a gesture
   or for a greeting. Their value is the number of SECONDS to keep the gesture (e.g. "wave for 5 seconds" = wave with
   value 5; "keep pointing forward for 5 seconds" = point_forward with value 5). wave uses the right hand, wave_left
@@ -49,11 +49,33 @@ SPECIAL SKILLS:
   the robot has hands; if it is rejected with no_hands, say so instead of retrying. Other gestures: salute (hand at the
   forehead), clap (applause), bow (polite bow), dance (dances on the spot). The arms return to their original position
   after the gesture.
+- PLACES: the robot has an exact position memory. Slot 0 is the START position. save_place N (1-9) remembers where the
+  robot stands now; go_to_place N walks back there in a straight line and turns to the saved heading (go_to_place 0 =
+  back to the start, nothing needs to be saved). where_am_i reports the exact position (x forward, y left, relative to
+  the start) and the distance and direction to every saved place. YOU must remember which slot is which place (write
+  it in your thought/answer); the slots survive between tasks. If go_to_place ends 'blocked', turn aside, walk around the
+  obstacle and call it again. The dead-reckoning estimate in the NOW line does not know about go_to_place and
+  push_forward: after them use the result message or where_am_i for the position.
+- push_forward pushes a light box ahead of the robot with both arms for the given number of metres. First walk_to_obstacle
+  (it stops 0.7 m before the object, which is where the hands just touch it), then push_forward; afterwards look at the
+  picture to check where the box is.
+
+GOING TO AN OBJECT YOU SEE (box, pillar, person...):
+- Every camera picture has a RULER at the bottom with numbers 0-100 = the horizontal position in percent of the picture
+  width (0 = left edge, 50 = centre, 100 = right edge). The camera view is 80 degrees wide.
+- When the object is in the picture, read its position on the ruler (the middle of the object) and call
+  turn_towards with that percent (1-100). It turns the robot by the right angle, so the object is straight ahead.
+  Never guess a turn angle by eye. Then walk_to_obstacle (stops 0.7 m in front of the nearest obstacle straight ahead,
+  which should be the object; check this in the next picture) and then continue (e.g. push_forward).
+- If the object is NOT in the picture, search: turn_left 60, look, turn_left 60, look, ... (the view is 80 degrees wide, so
+  60 degree steps overlap), until you see it. Do not walk anywhere before you have seen the object.
+- Distances: after turn_towards the LIDAR "front" distance is the distance to the object straight ahead.
 
 HOW TO WORK (speed matters, every reply of yours costs seconds):
 - Plan the WHOLE task at once: return the complete ordered list of actions you can already decide from what you see
   (up to {max_actions} actions). Do not return a single action when the following ones are predictable
-  (a 90 degree turn = two turn_left 45; walking 3 m = three walk_forward 1).
+  (walking 3 m = three walk_forward 1). A turn of ANY angle between 5 and 180 degrees is ONE turn_left / turn_right
+  action - never split it into 45 degree steps and never guess an angle when you can measure it (see turn_towards).
 - The special action {{"skill": "look"}} takes a camera picture without moving. Put it between movements when you
   need to see something in between (e.g. scanning the room: turn_left 45, look, turn_left 45, look, ...).
   You receive all these pictures together in the next step, labelled in order.
@@ -108,6 +130,28 @@ Answer with ONE JSON object and nothing else:
 Skill catalog (JSON):
 {catalog}
 """
+
+
+def draw_ruler(im):
+    """TT_PATCH: dole na obrazok nakresli pravitko 0-100 (percenta sirky) - AI z neho odcita polohu predmetu"""
+    from PIL import ImageDraw, ImageFont
+    im = im.convert("RGB")
+    w, h = im.size
+    try:
+        font = ImageFont.load_default(size=max(11, w // 48))
+    except Exception:
+        font = ImageFont.load_default()
+    band = max(18, w // 30)
+    d = ImageDraw.Draw(im, "RGBA")
+    d.rectangle([0, h - band, w, h], fill=(0, 0, 0, 170))
+    for p in range(0, 101, 10):
+        x = min(w - 1, int(round(p / 100.0 * (w - 1))))
+        d.line([x, h - band, x, h - band + band // 3], fill=(255, 255, 255, 255), width=2)
+        label = str(p)
+        tw = d.textlength(label, font=font)
+        d.text((min(max(x - tw / 2, 1), w - tw - 1), h - band + band // 3 - 1), label, fill=(255, 255, 255, 255), font=font)
+    d.line([w // 2, 0, w // 2, 10], fill=(255, 255, 0, 255), width=2)          # znacka stredu hore
+    return im
 
 
 def parse_json(text):
@@ -288,9 +332,15 @@ class Agent:
                 reply = self.llm.ask(self.system, user, images)
             except Exception as e:     # siet, kluc, limit...
                 self.log("LLM chyba: %s" % e)
+                ai = getattr(self.llm, "last_info", None)
+                if ai:
+                    fb("ai|" + json.dumps(ai, ensure_ascii=False), it)
                 return self._result(False, "llm_error", "Chyba AI sluzby: %s" % e, steps_done, it)
             dt = time.time() - t0
             fb("llm|%.1f" % dt, it)
+            ai = getattr(self.llm, "last_info", None)
+            if ai:
+                fb("ai|" + json.dumps(ai, ensure_ascii=False), it)
             self._save("step_%02d_reply" % it, reply.encode("utf-8"), "text/plain")
             try:
                 plan = parse_json(reply)

@@ -47,12 +47,14 @@ public:
     p.decel = declare_parameter<double>("decel", p.decel);
     p.lag = declare_parameter<double>("lag", p.lag);
     p.arm_s = declare_parameter<double>("arm_s", p.arm_s);
+    p.camera_hfov_deg = declare_parameter<double>("camera_hfov_deg", p.camera_hfov_deg);      // TT_PATCH
     p.stop_dist = declare_parameter<double>("obstacle_stop", p.stop_dist);       // LIDAR_PATCH
     p.block_dist = declare_parameter<double>("obstacle_block", p.block_dist);
     p.lidar_guard = declare_parameter<bool>("lidar_guard", p.lidar_guard);
     lp_.floor_z = declare_parameter<double>("lidar_floor_z", lp_.floor_z);
     lp_.self_x = declare_parameter<double>("lidar_self_x", lp_.self_x);
     lp_.self_y = declare_parameter<double>("lidar_self_y", lp_.self_y);
+    lp_.flip = declare_parameter<bool>("lidar_flip", true);          // SYM_PATCH: URDF ma roll 180 st.
     exec_ = std::make_unique<skills::SkillExecutor>(p);
 
     cmd_pub_ = create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
@@ -123,7 +125,10 @@ private:
   {
     sens_.ox = m.pose.pose.position.x;
     sens_.oy = m.pose.pose.position.y;
+    const auto & q = m.pose.pose.orientation;          // NAV_PATCH: natocenie v suradniciach odometrie
+    sens_.oyaw = std::atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z));
     sens_.have_odom = true;
+    exec_->observe(sens_);
   }
 
   void on_cloud(const sensor_msgs::msg::PointCloud2 & m)
@@ -259,7 +264,7 @@ private:
 
   static double gesture_ramp(const std::string & g)           // ako dlho ruka nabieha / sa vracia [s]
   {
-    if (g == "point_forward" || g == "thumbs_up") {return 2.0;}
+    if (g == "point_forward" || g == "thumbs_up" || g == "push") {return 2.0;}
     if (g == "salute") {return 1.8;}
     if (g == "clap" || g == "dance") {return 1.6;}
     if (g == "bow") {return 2.5;}
@@ -312,6 +317,10 @@ private:
       add_arm(o, "right", {-1.62, -0.12, 0.0, 1.5, 0.0});                  // ruka natiahnuta rovno dopredu
     } else if (g == "thumbs_up") {
       add_arm(o, "right", {-0.9, -0.3, 0.0, 0.9, 0.6});                    // predlaktie dopredu, palec hore
+    } else if (g == "push") {
+      // NAV_PATCH: obe ruky dopredu vo vyske hrudnika (dlane/zapastia ~ 0,9 m nad zemou), overene FK modelu G1, bez kolizii
+      add_arm(o, "right", {-1.0, -0.2, 0.0, 1.4, 0.0});
+      add_arm(o, "left", {-1.0, -0.2, 0.0, 1.4, 0.0});
     } else if (g == "salute") {
       add_arm(o, "right", {0.0, -1.43, -1.0, -0.95, 0.0});                 // dlan k celu, lakeť do strany (overene FK)
     } else if (g == "clap") {

@@ -9,6 +9,7 @@ Vypis:  Rozmýšľam... -> Vidím / Úvaha -> Plánované akcie ([ ] čaká, [>]
 import json
 import shutil
 import sys
+import textwrap
 import time
 
 import rclpy
@@ -66,6 +67,7 @@ class View:
         self.t0 = time.time()
         self.col = self.tty
         self.lang = "sk"
+        self.ai = []             # info o AI z feedbacku
 
     def c(self, code, s):
         return "\033[%sm%s\033[0m" % (code, s) if self.col else s
@@ -82,11 +84,12 @@ class View:
         for i, (st, label, msg) in enumerate(self.items):
             mark = MARK[st]
             colour = {"ok": "32", "fail": "31", "run": "33", "skip": "90"}.get(st)
-            txt = "  %s %d. %s" % (mark, i + 1, label)
-            if msg and st in ("fail",):
-                txt += " - " + msg
-            txt = txt[:self.width()]
+            txt = ("  %s %d. %s" % (mark, i + 1, label))[:self.width()]
             out.append(self.c(colour, txt) if colour else txt)
+            if msg and st in ("fail",):          # cela sprava, zalomena (kazdy riadok je kratsi ako sirka terminalu)
+                for part in textwrap.wrap(msg, max(20, self.width() - 8))[:6]:
+                    ln = "        " + part
+                    out.append(self.c(colour, ln) if colour else ln)
         if self.tail:
             out.append("    %s:" % T[self.lang]["blocked"])
             for t in self.tail:
@@ -114,6 +117,11 @@ class View:
             self.out.write(self.c("36", "[%d] %s" % (it, T[self.lang]["think"])))
             self.out.flush()
             self.llm_wait = True
+        elif kind == "ai":
+            try:
+                self.ai.append(json.loads(rest))
+            except ValueError:
+                pass
         elif kind == "lang":
             if rest in T:
                 self.lang = rest
@@ -209,17 +217,19 @@ def _main():
         gh.cancel_goal_async()
         rclpy.spin_until_future_complete(node, res, timeout_sec=15.0)
     wrapped = res.result()
+    if wrapped is None:          # zrusenie este nedobehlo (agent caka na AI alebo dokonci pohyb)
+        print("\n" + T[view.lang]["cancel"] + " (agent ulohu dokonci/prerusi na pozadi)")
+        node.destroy_node()
+        rclpy.shutdown()
+        sys.exit(130)
     r = wrapped.result
     names = {GoalStatus.STATUS_SUCCEEDED: "SUCCEEDED", GoalStatus.STATUS_ABORTED: "ABORTED",
              GoalStatus.STATUS_CANCELED: "CANCELED"}
-    print("\nResult:")
-    print("    success: %s" % str(r.success).lower())
-    print("status: %s" % r.status)
-    print("summary: %s" % r.summary)
-    print("steps: %d" % r.steps)
-    print("iterations: %d" % r.iterations)
-    print("time: %.0f s" % (time.time() - t0))
-    print("\nGoal finished with status: %s" % names.get(wrapped.status, str(wrapped.status)))
+    from humanoid_agent.llm_backends import result_lines
+    print()
+    for col, txt in result_lines(r, time.time() - t0, view.ai, view.lang,
+                                 wrapped.status == GoalStatus.STATUS_CANCELED):
+        print(view.c(col, txt) if col else txt)
     node.destroy_node()
     rclpy.shutdown()
     sys.exit(0 if r.success else 1)
