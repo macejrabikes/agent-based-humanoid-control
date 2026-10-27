@@ -1,0 +1,17 @@
+# Python závislosti projektu (pip install -r requirements.txt).
+# ROS 2 Jazzy a Gazebo Harmonic sa inštalujú systémovo (apt), pozri doc/NAVOD.md.
+
+# agent (humanoid_agent): obraz z kamery s pravítkom
+Pillow
+# nástroje a MuJoCo demo (tools/, mujoco_demo/)
+numpy
+lxml
+PyYAML
+mujoco
+trimesh
+# natrénovaná politika chôdze v Pythone (policy_impl:=py, mujoco_demo, tools/export_g1_policy.py)
+torch
+
+# Systémové závislosti (nie sú v pip):
+#   ROS 2 Jazzy, Gazebo Harmonic (ros-jazzy-ros-gz), colcon, g++ (C++17), Kubuntu/Ubuntu 24.04
+# LLM služby (Gemini, Mistral, Groq) sa volajú cez HTTP (urllib), bez ďalších knižníc.

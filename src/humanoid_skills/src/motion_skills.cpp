@@ -51,6 +51,8 @@ public:
     p.stop_dist = declare_parameter<double>("obstacle_stop", p.stop_dist);       // LIDAR_PATCH
     p.block_dist = declare_parameter<double>("obstacle_block", p.block_dist);
     p.lidar_guard = declare_parameter<bool>("lidar_guard", p.lidar_guard);
+    p.push_speed = declare_parameter<double>("push_speed", p.push_speed);         // PUSH_PATCH
+    p.push_gap = declare_parameter<double>("push_gap", p.push_gap);
     lp_.floor_z = declare_parameter<double>("lidar_floor_z", lp_.floor_z);
     lp_.self_x = declare_parameter<double>("lidar_self_x", lp_.self_x);
     lp_.self_y = declare_parameter<double>("lidar_self_y", lp_.self_y);

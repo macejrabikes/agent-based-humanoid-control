@@ -54,6 +54,7 @@ struct Params
   double camera_hfov_deg = 80.0;   // TT_PATCH: vodorovny pohlad kamery [st.] (turn_towards)
   double push_speed = 0.30;    // NAV_PATCH: push_forward - rychlost chodze pri tlaceni [m/s]
   double goto_tol = 0.15;      // NAV_PATCH: go_to_place - cielom je kruh s tymto polomerom [m]
+  double push_gap = 0.42;      // PUSH_PATCH: push_forward - vzdialenost predmetu od lidaru, kde sa natiahnu ruky [m] (ruky dosiahnu ~0.34 m)
   double stuck_s = 4.0, stuck_min = 0.15;   // STUCK_PATCH: ak za stuck_s prejde < stuck_min [m], robot stoji o prekazku
 };
 
@@ -259,7 +260,7 @@ public:
     s = {}; s.name = "push_forward"; s.kind = K::Push; s.has_value = true; s.unit = "m"; s.vmin = 0.2; s.vmax = 3.0; s.vdef = 1.0;
     s.description = "Pushes an object in front of the robot: both arms are stretched forward at chest height and the robot walks slowly "
       "forward by 'value' metres (default 1), pushing a light box or similar object ahead of it. First walk_to_obstacle (it stops 0.7 m "
-      "before the object, which is where the hands just touch it), then push_forward. The arms return to their original position afterwards. "
+      "before the object), then push_forward: it first steps closer to the object (about 0.4 m) with the arms down, then stretches the arms. The arms return to their original position afterwards. "
       "If the robot cannot move (object too heavy or blocked) it stops with status 'blocked'. Takes 10-20 s. Robot must stand with arms down.";
     add(s);
     s = {}; s.name = "save_place"; s.kind = K::Place; s.has_value = true; s.unit = "slot"; s.vmin = 1; s.vmax = 9; s.vdef = 1;
@@ -422,6 +423,7 @@ public:
     w_cur_ = 0.0;
     goto_prev_d_ = 0.0;
     push_stage_ = 0;
+    push_t_ = 0.0;
     push_ok_ = true;
     push_status_ = "ok";
     push_msg_.clear();
@@ -437,6 +439,13 @@ public:
     }
     if (spec->kind == Kind::Push) {
       gest_total_ = (0.5 + v / p_.push_speed * 1.25 + 2.0) + 2.0 * kPushRamp;
+      // PUSH_PATCH: walk_to_obstacle zastavi na stop_dist (0.7 m), ruky ale dosiahnu len ~0.34 m -> najprv dojdi bez rúk bližšie.
+      // Lidar pod ~0.45 m uz nevidi (filter tela), preto sa vzdialenost zmeria raz na zaciatku a dojde sa podla odometrie.
+      push_appr_ = 0.0;
+      if (s.have_odom && s.have_lidar && s.lid_front < p_.stop_dist + 0.25) {
+        push_appr_ = clampd(s.lid_front - p_.push_gap, 0.0, 0.5);
+      }
+      if (push_appr_ > 0.03) {push_stage_ = -1; push_ax0_ = s.ox; push_ay0_ = s.oy;}
     }
     phase_ = (spec->kind == Kind::Look) ? Phase::Settle : Phase::Move;     // look_around: najprv zmeraj smer 0
     return true;
@@ -967,6 +976,24 @@ private:
 
   void push_(Output & o, const Sensors & s, double dt)
   {
+    if (push_stage_ == -1) {         // PUSH_PATCH: pristup k predmetu s rukami dole
+      o.state = "approaching_object";
+      const double done = std::hypot(s.ox - push_ax0_, s.oy - push_ay0_);
+      const double left = push_appr_ - done;
+      push_t_ += dt;
+      if (left <= 0.02 || push_t_ > 2.0 * push_appr_ / p_.push_speed + 6.0) {
+        v_cur_ = 0.0;
+        push_stage_ = 0;
+        push_t_ = 0.0;
+      } else {
+        const double vt = std::min(p_.push_speed, std::sqrt(2.0 * p_.decel * std::max(left, 0.0)) + 0.05);
+        v_cur_ += clampd(vt - v_cur_, -p_.decel * dt, p_.accel * dt);
+      }
+      o.vx = v_cur_;
+      o.wz = clampd(p_.heading_kp * wrap_pi(yaw0_ - s.yaw), -p_.heading_max, p_.heading_max);
+      o.progress = 0.0;
+      return;
+    }
     if (!pose_sent_) {
       o.gesture = "push";
       o.gesture_arm = 3;
@@ -1044,6 +1071,7 @@ private:
   bool push_ok_ = true;
   std::string push_status_ = "ok", push_msg_;
   double push_moved_ = 0, push_x0_ = 0, push_y0_ = 0;
+  double push_appr_ = 0, push_ax0_ = 0, push_ay0_ = 0, push_t_ = 0;   // PUSH_PATCH
 };
 
 }  // namespace skills

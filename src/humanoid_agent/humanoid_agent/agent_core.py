@@ -57,7 +57,7 @@ SPECIAL SKILLS:
   obstacle and call it again. The dead-reckoning estimate in the NOW line does not know about go_to_place and
   push_forward: after them use the result message or where_am_i for the position.
 - push_forward pushes a light box ahead of the robot with both arms for the given number of metres. First walk_to_obstacle
-  (it stops 0.7 m before the object, which is where the hands just touch it), then push_forward; afterwards look at the
+  (it stops 0.7 m before the object), then push_forward (it steps closer by itself, then pushes); afterwards look at the
   picture to check where the box is.
 
 GOING TO AN OBJECT YOU SEE (box, pillar, person...):
