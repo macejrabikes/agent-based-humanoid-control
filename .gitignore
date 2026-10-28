@@ -198,3 +198,8 @@ log/
 *.before_*
 __pycache__/
 FETCH_HEAD
+
+# vygenerovane svety (gen_world.py)
+src/humanoid_gazebo/worlds/rooms_*
+src/humanoid_gazebo/worlds/maze_*
+src/humanoid_gazebo/worlds/warehouse_*

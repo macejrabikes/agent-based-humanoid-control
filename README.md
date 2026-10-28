@@ -33,9 +33,10 @@ Prínos projektu:
 | `src/humanoid_interfaces` | ROS 2 akcie `Skill` a `Task` |
 | `src/humanoid_teleop` | ovládanie z klávesnice (WASD) |
 | `src/humanoid_control` | konfigurácia kontrolérov |
-| `tools/` | pomocné skripty (generovanie modelu a kolízií, export politiky) |
+| `tools/` | pomocné skripty (generovanie modelu a kolízií, export politiky) a generátor svetov `gen_world.py` |
+| `maps/` | ASCII mapy pre generátor svetov |
 | `mujoco_demo/` | záložné demo chôdze v MuJoCo |
-| `doc/` | technická dokumentácia a návod na spustenie (`doc/NAVOD.md`) |
+| `doc/` | technická dokumentácia: návod na spustenie (`doc/NAVOD.md`), prehľad príkazov `chappie_*` (`doc/PRIKAZY.md`) |
 
 ## Architektúra
 
