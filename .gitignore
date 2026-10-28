@@ -197,3 +197,4 @@ install/
 log/
 *.before_*
 __pycache__/
+FETCH_HEAD
