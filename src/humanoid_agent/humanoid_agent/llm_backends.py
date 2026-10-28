@@ -241,6 +241,53 @@ def _tokens(js):
         return 0
 
 
+COST_FILE = os.path.expanduser("~/.chappie_cost.json")
+
+
+def _tokens_split(js):
+    """-> (vstupne, vystupne) tokeny z odpovede Gemini / OpenAI-kompatibilnej / Claude"""
+    try:
+        if "usageMetadata" in js:
+            u = js["usageMetadata"]
+            return (int(u.get("promptTokenCount", 0)),
+                    int(u.get("candidatesTokenCount", 0)) + int(u.get("thoughtsTokenCount", 0)))
+        u = js.get("usage", {})
+        return (int(u.get("prompt_tokens") or u.get("input_tokens") or 0),
+                int(u.get("completion_tokens") or u.get("output_tokens") or 0))
+    except (AttributeError, TypeError, ValueError):
+        return 0, 0
+
+
+def _price(name):
+    """(cena vstup, cena vystup) v USD za 1 mil. tokenov z <SLUZBA>_PRICE_IN / _PRICE_OUT (predvolene 0 = free tier)"""
+    try:
+        return (float(os.environ.get(name.upper() + "_PRICE_IN", "0") or 0),
+                float(os.environ.get(name.upper() + "_PRICE_OUT", "0") or 0))
+    except ValueError:
+        return 0.0, 0.0
+
+
+def _cost_log(name, model, tin, tout):
+    """zapise poziadavku do ~/.chappie_cost.json: {"days": {den: {sluzba: {model: {req, in, out}}}}} -> cena v USD"""
+    try:
+        with open(COST_FILE) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        d = {}
+    day = time.strftime("%Y-%m-%d")
+    m = d.setdefault("days", {}).setdefault(day, {}).setdefault(name, {}).setdefault(model or "?", {"req": 0, "in": 0, "out": 0})
+    m["req"] += 1
+    m["in"] += int(tin)
+    m["out"] += int(tout)
+    try:
+        with open(COST_FILE, "w") as f:
+            json.dump(d, f)
+    except OSError:
+        pass
+    pin, pout = _price(name)
+    return (tin * pin + tout * pout) / 1e6
+
+
 def _rate(name, hdr, used):
     """(limit, zostava) poziadaviek: z hlaviciek x-ratelimit-*-requests, inak z <SLUZBA>_DAILY_LIMIT"""
     lim = rem = None
@@ -425,9 +472,12 @@ class ChainLLM:
                 print("[retaz] odpoveda: %s" % name, flush=True)
                 _LAST[0] = name
             tok = _tokens(_RESP[1] or {})
+            tin, tout = _tokens_split(_RESP[1] or {})
+            cost = _cost_log(name, str(getattr(llm, "model", "")), tin, tout)
             used, used_tok = _usage_update(name, tok)
             lim, rem = _rate(name, _RESP[0], used)
             self.last_info = {"service": name, "model": str(getattr(llm, "model", "")), "tokens": tok, "used": used,
+                              "tokens_in": tin, "tokens_out": tout, "cost": cost,
                               "used_tokens": used_tok, "limit": lim, "remaining": rem,
                               "period": "month" if name == "mistral" else "day", "failed": failed}
             return out
@@ -538,17 +588,22 @@ def ai_lines(infos, lang="sk"):
             failed.setdefault(name, why)
         s = i.get("service")
         if s:
-            p = per.setdefault(s, [0, 0, None])
+            p = per.setdefault(s, [0, 0, None, 0, 0, 0.0])
             p[0] += 1
             p[1] += int(i.get("tokens") or 0)
             p[2] = i
+            p[3] += int(i.get("tokens_in") or 0)
+            p[4] += int(i.get("tokens_out") or 0)
+            p[5] += float(i.get("cost") or 0.0)
     if failed:
         out.append(T["warn"] % ", ".join("%s (%s)" % (AI_NAMES.get(n, n), T["why"].get(w, w)) for n, w in failed.items()))
-    for s, (cnt, tok, last) in per.items():
+    for s, (cnt, tok, last, t_in, t_out, cost) in per.items():
         head = AI_NAMES.get(s, s) + ((" (%s)" % last["model"]) if last.get("model") else "")
         parts = [head, _plural(cnt, T["req"], lang)]
         if tok:
-            parts.append("%s %s" % (_num(tok), T["tok"]))
+            parts.append("%s %s" % (_num(tok), T["tok"]) + (" (%s in / %s out)" % (_num(t_in), _num(t_out)) if t_in or t_out else ""))
+        if cost > 0:
+            parts.append("≈ $%.4f" % cost)
         out.append("AI: " + " · ".join(parts))
         used = last.get("used")
         if used is not None:

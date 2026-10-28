@@ -131,7 +131,7 @@ class AgentNode(Node):
         self.model = self.declare_parameter("model", "").value
         self.max_iterations = int(self.declare_parameter("max_iterations", 10).value)
         self.max_actions = int(self.declare_parameter("max_actions", 20).value)
-        self.max_distance = float(self.declare_parameter("max_total_distance", 15.0).value)
+        self.max_distance = float(self.declare_parameter("max_total_distance", 40.0).value)
         self.runs_dir = self.declare_parameter("runs_dir", os.path.expanduser("~/chappie_runs")).value
         cb = ReentrantCallbackGroup()
         self.skill_client = ActionClient(self, Skill, "/skills/execute", callback_group=cb)

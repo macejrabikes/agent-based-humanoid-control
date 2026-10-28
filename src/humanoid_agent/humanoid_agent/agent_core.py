@@ -103,6 +103,13 @@ Rules:
   look at the LIDAR and the picture and replan, do not repeat the same walk.
   Exception: when walk_to_obstacle (or a walk towards a wall) ends with blocked, the robot is already standing at the
   wall - that is the goal reached, continue with the next part of the task.
+- walk_to_obstacle stops in front of the NEAREST thing straight ahead (wall, box, cylinder...), which may NOT be your
+  target. Plan nothing after it in the same reply except "look": you get a new picture and LIDAR, and only then you check
+  that the target is really in front of you (a target that looked far away cannot have stopped you 0.7 m away
+  after a few metres) and continue. If it is another object, walk around it first.
+- If a movement fails (turn timeout, blocked, no progress), the robot is probably TOUCHING something (an arm is caught
+  on an edge). NEVER repeat the same turn from the same place. First walk_backward 0.5 m (once or twice), read the LIDAR
+  in the result (it must show at least 0.8 m free around the robot), then turn or walk again, away from the obstacle.
 - The robot walks at about 0.5 m/s: "walk forward for N seconds" means about 0.5*N metres (5 seconds = 2.5 m),
   done as walk_forward steps of <= 1 m.
 - Following a wall: the wall must stay at about the same distance at the robot's side (read it from the LIDAR). Walk in
@@ -231,7 +238,7 @@ class Agent:
     MAX_IMAGES = 10
 
     def __init__(self, robot, camera, llm, catalog, max_iterations=10, max_actions=20,
-                 max_total_distance=15.0, max_failures=3, run_dir=None, log=print, should_cancel=None, lidar=None):
+                 max_total_distance=40.0, max_failures=3, run_dir=None, log=print, should_cancel=None, lidar=None):
         self.robot, self.camera, self.llm, self.catalog = robot, camera, llm, catalog
         self.lidar = lidar          # objekt s .read() -> {"front":..,"left":..,"right":..,"back":..,"arms_up":..} alebo None
         self.max_iterations, self.max_actions = max_iterations, max_actions
@@ -365,6 +372,14 @@ class Agent:
                 fb("why|" + why, it)
             actions, errors = validate_actions(plan.get("actions", []), self.catalog, self.max_actions, lang)
             done = plan.get("done") is True
+            # SAFE_PATCH: walk_to_obstacle sa zastavi pred hocicim -> dalsie akcie az po overeni ciela
+            wi = next((k for k, a in enumerate(actions) if a["skill"] == "walk_to_obstacle"), None)
+            if wi is not None and any(a["skill"] != "look" for a in actions[wi + 1:]):
+                actions = actions[:wi + 1]
+                done = False
+                history.append("[system] The actions after walk_to_obstacle were NOT executed: it stops in front of the nearest "
+                               "object straight ahead, which may not be your target. Check the new picture and the LIDAR, "
+                               "confirm the target is in front of you, then plan the rest.")
             if actions:
                 fb("plan|" + json.dumps([self.label(a) for a in actions], ensure_ascii=False), it)
             for e in errors:

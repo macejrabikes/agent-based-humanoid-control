@@ -53,6 +53,7 @@ struct Params
   bool lidar_guard = true;     // zastavit chodzu pred prekazkou (LIDAR_PATCH)
   double camera_hfov_deg = 80.0;   // TT_PATCH: vodorovny pohlad kamery [st.] (turn_towards)
   double push_speed = 0.30;    // NAV_PATCH: push_forward - rychlost chodze pri tlaceni [m/s]
+  double dance_step = 0.10;    // GEST_PATCH: dance - amplituda bocnych krokov [m/s] (0 = nohy stoja)
   double goto_tol = 0.15;      // NAV_PATCH: go_to_place - cielom je kruh s tymto polomerom [m]
   double push_gap = 0.42;      // PUSH_PATCH: push_forward - vzdialenost predmetu od lidaru, kde sa natiahnu ruky [m] (ruky dosiahnu ~0.34 m)
   double stuck_s = 4.0, stuck_min = 0.15;   // STUCK_PATCH: ak za stuck_s prejde < stuck_min [m], robot stoji o prekazku
@@ -470,7 +471,8 @@ public:
     Output o;
     if (!active_) {return o;}
     t_ += dt;
-    o.publish_cmd = cur_.kind != Kind::Arms && cur_.kind != Kind::Wait && cur_.kind != Kind::Gesture &&
+    const bool dance_steps = cur_.kind == Kind::Gesture && cur_.gesture == "dance" && p_.dance_step > 0.0;   // GEST_PATCH
+    o.publish_cmd = cur_.kind != Kind::Arms && cur_.kind != Kind::Wait && (cur_.kind != Kind::Gesture || dance_steps) &&
       cur_.kind != Kind::Getup;
 
     // pad robota
@@ -522,6 +524,16 @@ public:
           const double wall = t_ - gest_tw_;
           const double el = (s.sim_t >= 0.0 && gest_t0_ >= 0.0) ? (s.sim_t - gest_t0_) : wall;
           o.progress = clampd(el / (gest_total_ + 0.8), 0, 1);
+          if (dance_steps) {      // GEST_PATCH: nohy sa pri tanci striedaju (kroky do strany spolu s pohupovanim trupu)
+            const double ramp = cur_.gesture_ramp, ta = el - ramp;
+            const double env = clampd(ta / 1.0, 0.0, 1.0) * clampd((gest_total_ - ramp - el) / 1.0, 0.0, 1.0);
+            o.vy = -env * p_.dance_step * std::sin(2.0 * M_PI * 0.75 * ta);      // rytmus ako ruky
+            if (s.have_odom) {        // drz poziciu: dopredny drift z krokov sa vracia spat
+              const double ex = std::cos(s.oyaw) * (s.ox - x0_) + std::sin(s.oyaw) * (s.oy - y0_);
+              o.vx = clampd(-1.5 * ex, -0.12, 0.12);
+            }
+            o.wz = clampd(p_.heading_kp * wrap_pi(yaw0_ - s.yaw), -p_.heading_max, p_.heading_max);
+          }
           // trajektoria sa sama vrati do zakladnej polohy (nic dalsie sa neposiela)
           if (el >= gest_total_ + 0.8 || wall > 4.0 * (gest_total_ + 0.8) + 5.0) {
             arms_up_ = false;
@@ -549,7 +561,13 @@ public:
         break;
     }
     if (!o.finished && cur_.kind != Kind::Stop && t_ > timeout_()) {
-      return finish_(o, false, "timeout", "Skill " + cur_.name + " trval prilis dlho.", s);
+      std::string tmsg = "Skill " + cur_.name + " trval prilis dlho.";
+      if (cur_.kind == Kind::Turn) {       // SAFE_PATCH: napoveda pre AI, co robit po zaseknuti
+        tmsg += " The robot probably cannot turn because an arm or the body touches an obstacle (LIDAR: front " +
+          fmt_dist(s.lid_front) + ", left " + fmt_dist(s.lid_left) + ", right " + fmt_dist(s.lid_right) + ", back " +
+          fmt_dist(s.lid_back) + " m). First walk_backward 0.5 m (away from the nearest obstacle), then turn again.";
+      }
+      return finish_(o, false, "timeout", tmsg, s);
     }
     o.value_done = measured_(s);
     return o;

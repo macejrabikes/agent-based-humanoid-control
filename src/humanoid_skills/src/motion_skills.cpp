@@ -51,6 +51,7 @@ public:
     p.stop_dist = declare_parameter<double>("obstacle_stop", p.stop_dist);       // LIDAR_PATCH
     p.block_dist = declare_parameter<double>("obstacle_block", p.block_dist);
     p.lidar_guard = declare_parameter<bool>("lidar_guard", p.lidar_guard);
+    p.dance_step = declare_parameter<double>("dance_step", p.dance_step);         // GEST_PATCH
     p.push_speed = declare_parameter<double>("push_speed", p.push_speed);         // PUSH_PATCH
     p.push_gap = declare_parameter<double>("push_gap", p.push_gap);
     lp_.floor_z = declare_parameter<double>("lidar_floor_z", lp_.floor_z);
@@ -257,6 +258,7 @@ private:
   struct Pose5 {double p, r, y, e, w;};       // shoulder_pitch, shoulder_roll, shoulder_yaw, elbow, wrist_roll
   // ZAKLADNA poloha PRAVEJ ruky (rovnaka ako vychodzia poloha pri trenovani politiky chodze); lava = zrkadlo.
   static constexpr double kRest[5] = {0.2, -0.2, 0.0, 0.6, 0.0};
+  static constexpr double kClapWrist = 0.8;     // GEST_PATCH: wrist_roll pri tlieskani (FK: dlane k sebe; ak su otocene opacne, daj -0.8)
 
   static double smooth(double u)
   {
@@ -331,17 +333,24 @@ private:
       const double f = 0.8 * (act ? 0.5 - 0.5 * std::cos(2.0 * M_PI * 1.5 * tau) : 0.0);
       const double op[5] = {-0.21, -0.9, 0.1, -0.37, 0.0}, cl[5] = {-0.77, -0.78, 0.68, -0.29, 0.0};
       const Pose5 p{op[0] + (cl[0] - op[0]) * f, op[1] + (cl[1] - op[1]) * f, op[2] + (cl[2] - op[2]) * f,
-        op[3] + (cl[3] - op[3]) * f, 0.0};
+        op[3] + (cl[3] - op[3]) * f, kClapWrist};
       add_arm(o, "right", p);
       add_arm(o, "left", p);
     } else if (g == "bow") {
-      o.emplace_back("waist_pitch_joint", 0.35);                           // uklon dopredu (limit klbu 0.52)
+      o.emplace_back("waist_pitch_joint", 0.5);                            // GEST_PATCH: uklon dopredu (limit klbu 0.52)
+      add_arm(o, "right", {-0.05, -0.07, 0.74, 0.36, 0.0});               // prava ruka na brucho (zapastie ~ x 0.15, y -0.04 od panvy, overene FK)
+      add_arm(o, "left", {0.5, -0.15, 0.0, 0.12, 0.0});                    // lava ruka vystreta pri tele (pitch +0.5 vyrovna predklon)
     } else if (g == "dance") {
-      const double s1 = act ? std::sin(2.0 * M_PI * 0.9 * tau) : 0.0;
-      const double sw = act ? std::sin(2.0 * M_PI * 0.45 * tau) : 0.0;
-      add_arm(o, "right", {-1.4 + 0.5 * s1, -0.7, 0.0, 1.0 + 0.4 * s1, 0.0});
-      add_arm(o, "left", {-1.4 - 0.5 * s1, -0.7, 0.0, 1.0 - 0.4 * s1, 0.0});
-      o.emplace_back("waist_yaw_joint", 0.35 * sw);                        // pohupovanie bokmi
+      // GEST_PATCH: 'disco': ruky striedavo hore (diagonalne) a dole v rytme 0.75 Hz, trup sa natoci na stranu zdvihnutej ruky
+      const double u = act ? std::sin(2.0 * M_PI * 0.75 * tau) : 0.0;        // + = prava ruka hore
+      const Pose5 dn{-0.1, -0.5, 0.0, 0.3, 0.0}, hi{-2.5, -0.7, 0.0, 0.9, 0.0};
+      auto mix = [&](double k) {
+          return Pose5{dn.p + (hi.p - dn.p) * k, dn.r + (hi.r - dn.r) * k, dn.y + (hi.y - dn.y) * k,
+              dn.e + (hi.e - dn.e) * k, dn.w + (hi.w - dn.w) * k};
+        };
+      add_arm(o, "right", mix(0.5 + 0.5 * u));
+      add_arm(o, "left", mix(0.5 - 0.5 * u));
+      o.emplace_back("waist_yaw_joint", 0.3 * u);
     }
     return o;
   }
