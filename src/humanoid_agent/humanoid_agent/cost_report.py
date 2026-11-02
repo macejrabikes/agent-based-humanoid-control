@@ -42,17 +42,18 @@ def num(n):
 
 
 def summarize(days, keys):
-    """-> {sluzba: [poziadavky, vstup, vystup, cena]} za vybrane dni"""
+    """-> {sluzba: [poziadavky, vstup, vystup, cena, z cache]} za vybrane dni"""
     out = {}
     for k in keys:
         for svc, models in (days.get(k) or {}).items():
-            row = out.setdefault(svc, [0, 0, 0, 0.0])
+            row = out.setdefault(svc, [0, 0, 0, 0.0, 0])
             pin, pout = price(svc)
             for m in models.values():
                 row[0] += m.get("req", 0)
                 row[1] += m.get("in", 0)
                 row[2] += m.get("out", 0)
                 row[3] += (m.get("in", 0) * pin + m.get("out", 0) * pout) / 1e6
+                row[4] += m.get("cached", 0)
     return out
 
 
@@ -61,13 +62,13 @@ def show(title, rows):
     if not rows:
         print("  (ziadne poziadavky)")
         return
-    print("  %-10s %9s %12s %12s %10s" % ("sluzba", "poziad.", "vstup tok.", "vystup tok.", "cena USD"))
-    tot = [0, 0, 0, 0.0]
+    print("  %-10s %9s %12s %12s %10s %20s" % ("sluzba", "poziad.", "vstup tok.", "vystup tok.", "cena USD", "z cache (% vstupu)"))
+    tot = [0, 0, 0, 0.0, 0]
     for svc, r in sorted(rows.items()):
-        print("  %-10s %9s %12s %12s %10.4f" % (svc, num(r[0]), num(r[1]), num(r[2]), r[3]))
+        print("  %-10s %9s %12s %12s %10.4f %12s (%2d %%)" % (svc, num(r[0]), num(r[1]), num(r[2]), r[3], num(r[4]), 100 * r[4] // max(1, r[1])))
         tot = [a + b for a, b in zip(tot, r)]
     if len(rows) > 1:
-        print("  %-10s %9s %12s %12s %10.4f" % ("spolu", num(tot[0]), num(tot[1]), num(tot[2]), tot[3]))
+        print("  %-10s %9s %12s %12s %10.4f %12s (%2d %%)" % ("spolu", num(tot[0]), num(tot[1]), num(tot[2]), tot[3], num(tot[4]), 100 * tot[4] // max(1, tot[1])))
     print("  priemer na poziadavku: %s tokenov" % num((tot[1] + tot[2]) / max(1, tot[0])))
 
 
