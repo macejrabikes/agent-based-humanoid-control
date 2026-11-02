@@ -54,8 +54,25 @@ SPECIAL SKILLS:
   back to the start, nothing needs to be saved). where_am_i reports the exact position (x forward, y left, relative to
   the start) and the distance and direction to every saved place. YOU must remember which slot is which place (write
   it in your thought/answer); the slots survive between tasks. If go_to_place ends 'blocked', turn aside, walk around the
-  obstacle and call it again. The dead-reckoning estimate in the NOW line does not know about go_to_place and
-  push_forward: after them use the result message or where_am_i for the position.
+  obstacle and call it again. The dead-reckoning estimate in the NOW line does not know about go_to_place,
+  go_through_opening and push_forward: after them use the result message or where_am_i for the position.
+- go_through_opening finds a doorway (a gap in a wall 0.9-3.5 m wide) with the LiDAR and walks through it, centred, to
+  about 1.2 m behind the wall. It SEARCHES BY ITSELF: it turns on the spot all the way round and, if it sees no door, walks
+  to other parts of the room (towards the most open space, up to 4 places) and looks again, watching for a door all the time.
+  So just call it ALONE (plan nothing after it except "look"): you must see the new room before you decide anything. Use it
+  whenever the task is to go to another room or through a door; do not aim for a door with walk_forward and do not search
+  for the door yourself with turns or look_around first. If several doors are visible it takes the one closest to the
+  direction the robot faces and not the door it has just come through. If the task names a particular door (left, right,
+  the one with ...), look at the picture, turn_towards that door first and then call it. A doorway usually has a
+  differently coloured door frame (and maybe a mat on the floor). If it fails with no_opening, the whole search is done
+  and there is no passable door: do NOT call it again, finish and tell the user the door was not found.
+  After go_through_opening succeeds, plan a "look" and check the picture: the new room must look different (other walls and
+  objects). If the result says FAILED / not_through, you are still in the same room: look for a real door (with a frame) and try again.
+  A gap narrower than 0.9 m is not passable.
+- search_room moves the robot to the next unexplored spot of the room (towards the most open space, never to a spot it has
+  already visited) so the camera sees a new part. Use it to look for something in a room ("find the red box"): look_around;
+  if the object is not in the pictures, call search_room, then look_around (or look) again; repeat until you find it or
+  search_room fails with status explored (the whole room was searched) - then finish and say it was not found.
 - push_forward pushes a light box ahead of the robot with both arms for the given number of metres. First walk_to_obstacle
   (it stops 0.7 m before the object), then push_forward (it steps closer by itself, then pushes); afterwards look at the
   picture to check where the box is.
@@ -380,6 +397,12 @@ class Agent:
                 history.append("[system] The actions after walk_to_obstacle were NOT executed: it stops in front of the nearest "
                                "object straight ahead, which may not be your target. Check the new picture and the LIDAR, "
                                "confirm the target is in front of you, then plan the rest.")
+            gi = next((k for k, a in enumerate(actions) if a["skill"] == "go_through_opening"), None)
+            if gi is not None and any(a["skill"] != "look" for a in actions[gi + 1:]):
+                actions = actions[:gi + 1]
+                done = False
+                history.append("[system] The actions after go_through_opening were NOT executed: after passing a door the surroundings "
+                               "are new. Check the new picture and the LIDAR, then plan the rest.")
             if actions:
                 fb("plan|" + json.dumps([self.label(a) for a in actions], ensure_ascii=False), it)
             for e in errors:

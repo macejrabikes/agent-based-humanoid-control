@@ -86,7 +86,7 @@ class View:
             colour = {"ok": "32", "fail": "31", "run": "33", "skip": "90"}.get(st)
             txt = ("  %s %d. %s" % (mark, i + 1, label))[:self.width()]
             out.append(self.c(colour, txt) if colour else txt)
-            if msg and st in ("fail",):          # cela sprava, zalomena (kazdy riadok je kratsi ako sirka terminalu)
+            if msg and (st == "fail" or (st == "ok" and label.startswith(("go_through_opening", "search_room")))):     # cela sprava, zalomena (OPEN_PATCH: aj vysledok dveri)
                 for part in textwrap.wrap(msg, max(20, self.width() - 8))[:6]:
                     ln = "        " + part
                     out.append(self.c(colour, ln) if colour else ln)

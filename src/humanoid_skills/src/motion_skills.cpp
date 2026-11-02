@@ -54,6 +54,11 @@ public:
     p.dance_step = declare_parameter<double>("dance_step", p.dance_step);         // GEST_PATCH
     p.push_speed = declare_parameter<double>("push_speed", p.push_speed);         // PUSH_PATCH
     p.push_gap = declare_parameter<double>("push_gap", p.push_gap);
+    p.door_min_w = declare_parameter<double>("door_min_width", p.door_min_w);       // OPEN_PATCH
+    p.door_max_w = declare_parameter<double>("door_max_width", p.door_max_w);
+    p.door_pre = declare_parameter<double>("door_pre", p.door_pre);
+    p.door_exit = declare_parameter<double>("door_exit", p.door_exit);
+    p.door_speed = declare_parameter<double>("door_speed", p.door_speed);
     lp_.floor_z = declare_parameter<double>("lidar_floor_z", lp_.floor_z);
     lp_.self_x = declare_parameter<double>("lidar_self_x", lp_.self_x);
     lp_.self_y = declare_parameter<double>("lidar_self_y", lp_.self_y);
@@ -155,11 +160,16 @@ private:
   void refresh_lidar()
   {
     const bool fresh = lid_got_ && lid_.seen >= 50 && (now() - lid_stamp_).seconds() < 1.0;
+    if (!fresh) {     // OPEN_PATCH: diagnostika, preco lidar nie je pouzitelny
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000, "LiDAR nie je pouzitelny: prijate=%d, platnych bodov=%d, vek dat=%.2f s",
+        lid_got_ ? 1 : 0, lid_.seen, lid_got_ ? (now() - lid_stamp_).seconds() : -1.0);
+    }
     sens_.have_lidar = fresh;
     sens_.lid_front = fresh ? lid_.front : 99.0;
     sens_.lid_back = fresh ? lid_.back : 99.0;
     sens_.lid_left = fresh ? lid_.left : 99.0;
     sens_.lid_right = fresh ? lid_.right : 99.0;
+    sens_.bins = fresh ? lid_.bins : skills::LidarBins();      // OPEN_PATCH
   }
 
   void publish_lidar()
@@ -174,6 +184,16 @@ private:
       (!sens_.have_imu || sens_.gz < -0.7) ? "true" : "false");
     std_msgs::msg::String s;
     s.data = buf;
+    {     // OPEN_PATCH: surovy sken (index 0 = -180 st., krok 6 st., + = vlavo) na ladenie: ros2 topic echo /lidar/distances --once
+      std::string sc = ",\"scan\":[";
+      for (int ang = -180; ang < 180; ang += 6) {
+        char t[16];
+        std::snprintf(t, sizeof(t), "%s%.1f", ang > -180 ? "," : "", std::min(sens_.bins.r[static_cast<size_t>((ang + 180) / 2)], 99.0));
+        sc += t;
+      }
+      s.data.pop_back();
+      s.data += sc + "]}";
+    }
     lidar_pub_->publish(s);
   }
 

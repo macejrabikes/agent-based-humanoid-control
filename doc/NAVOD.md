@@ -55,7 +55,7 @@ ros2 run humanoid_teleop wasd_teleop
 
 ## 6. Skills
 
-Chôdza (`walk_forward`, `walk_backward`, `step_left/right`, `walk_to_obstacle`), otáčanie (`turn_left/right`, `turn_towards`), `get_up`, `look_around`, gestá a pózy rúk, navigácia (`save_place`, `go_to_place`, `where_am_i`) a tlačenie (`push_forward`). Úplný katalóg je v `src/humanoid_skills/include/humanoid_skills/skill_core.hpp`.
+Chôdza (`walk_forward`, `walk_backward`, `step_left/right`, `walk_to_obstacle`), otáčanie (`turn_left/right`, `turn_towards`), `get_up`, `look_around`, gestá a pózy rúk, navigácia (`save_place`, `go_to_place`, `where_am_i`) a tlačenie (`push_forward`). Prechod dverami rieši `go_through_opening` (LiDAR nájde otvor v stene, robot sa vycentruje a prejde, sám hľadá dvere po izbe) a `search_room` (presun na ďalšie neprehľadané miesto izby, napr. na hľadanie predmetu); test bez ROS: `g++ -std=c++17 -O1 -I src/humanoid_skills/include tools/test_door_sim.cpp -o /tmp/test_door && /tmp/test_door`. Úplný katalóg je v `src/humanoid_skills/include/humanoid_skills/skill_core.hpp`.
 
 ## 7. Iné svety (generátor)
 

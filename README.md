@@ -15,7 +15,7 @@ Projekt prepája jazykový model (LLM) s humanoidným robotom v simulácii. Upra
 Prínos projektu:
 
 - **Bezpečné rozhranie medzi AI a robotom:** LLM nevydáva priame povely motorom, vyberá len z overených skills (chôdza, otáčanie, gestá, vstávanie, navigácia, tlačenie). Výstup AI sa validuje.
-- **Navigácia a vnímanie:** LiDAR (zastavenie pred prekážkou), pamäť miest (`save_place`, `go_to_place`), natočenie k predmetu podľa pravítka na obraze z kamery (`turn_towards`), tlačenie predmetov (`push_forward`).
+- **Navigácia a vnímanie:** LiDAR (zastavenie pred prekážkou), pamäť miest (`save_place`, `go_to_place`), natočenie k predmetu podľa pravítka na obraze z kamery (`turn_towards`), tlačenie predmetov (`push_forward`), prechod dverami (`go_through_opening`: otvor v stene nájde LiDAR), prehľadávanie izby (`search_room`).
 - **Odolnosť voči výpadkom AI služieb:** reťaz Gemini → Mistral → Groq, vyčerpanú službu preskočí a vedie si počítadlá limitov.
 
 ## Štruktúra repozitára

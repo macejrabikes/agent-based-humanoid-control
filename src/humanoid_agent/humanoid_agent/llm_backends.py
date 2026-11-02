@@ -18,6 +18,8 @@ TEMP_CODES = (429, 500, 502, 503, 504)
 
 
 def _post_once(url, headers, body, timeout):
+    headers = dict(headers)
+    headers.setdefault("User-Agent", "chappie-agent/1.0")      # UA_PATCH: Cloudflare blokuje predvoleny 'Python-urllib' (403, kod 1010)
     req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -426,8 +428,9 @@ class OpenAICompatLLM:
                             ("HTTP 400" in msg and "image" in low):
                         too_big = True
                         break                                   # skusit s menej obrazkami
-                    if "HTTP 404" in msg or ("HTTP 400" in msg and "model" in low):
-                        continue                                # iny model
+                    if "HTTP 404" in msg or ("HTTP 400" in msg and "model" in low) or \
+                            (self.name == "openrouter" and ("HTTP 400" in msg or "HTTP 402" in msg or "HTTP 403" in msg or "HTTP 429" in msg)):
+                        continue                                # iny model (OpenRouter: model je obmedzeny alebo vytazeny)
                     raise
             if not too_big:
                 break
@@ -503,6 +506,45 @@ def _groq(model=""):
                            key, [m], min(3, int(os.environ.get("GROQ_MAX_IMAGES", "1"))), True)
 
 
+def _openrouter_pick(data, n=8):
+    """z odpovede /models vyberie BEZPLATNE chatovacie modely (vstup text+obrazok, vystup len text; najvacsi kontext prvy)"""
+    out = []
+    for m in data or []:
+        try:
+            p = m.get("pricing") or {}
+            arch = m.get("architecture") or {}
+            mods = arch.get("input_modalities") or []
+            outs = arch.get("output_modalities") or ["text"]
+            free = float(p.get("prompt", 1)) == 0 and float(p.get("completion", 1)) == 0
+            if free and "image" in mods and "text" in mods and outs == ["text"]:
+                out.append((int(m.get("context_length") or 0), m["id"]))
+        except (AttributeError, TypeError, ValueError, KeyError):
+            continue
+    out.sort(reverse=True)
+    return [i for _, i in out[:n]]
+
+
+def _openrouter_models():
+    try:
+        req = urllib.request.Request("https://openrouter.ai/api/v1/models", headers={"User-Agent": "chappie-agent/1.0"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return _openrouter_pick(json.loads(r.read().decode("utf-8")).get("data"))
+    except Exception:
+        return []
+
+
+def _openrouter(model=""):
+    key = os.environ.get("OPENROUTER_API_KEY")
+    if not key:
+        return None
+    env = model or os.environ.get("OPENROUTER_MODEL", "")
+    models = [m for m in env.replace(" ", "").split(",") if m] or _openrouter_models()
+    if not models:
+        return None
+    return OpenAICompatLLM("openrouter", os.environ.get("OPENROUTER_URL", "https://openrouter.ai/api/v1/chat/completions"),
+                           key, models, int(os.environ.get("OPENROUTER_MAX_IMAGES", "3")), True)
+
+
 def _gemini(model="", **kw):
     if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
         return None
@@ -524,8 +566,13 @@ def make_llm(provider, model="", **kw):
         if llm is None:
             raise RuntimeError("Chyba GROQ_API_KEY (subor ~/.chappie_keys)")
         return ChainLLM([("groq", llm)])
+    if p == "openrouter":
+        llm = _openrouter(model)
+        if llm is None:
+            raise RuntimeError("Chyba OPENROUTER_API_KEY (subor ~/.chappie_keys) alebo sa nenasiel bezplatny model s obrazkami")
+        return ChainLLM([("openrouter", llm)])
     if p in ("gemini", "google", "chain", "auto"):
-        order = os.environ.get("CHAPPIE_CHAIN", "gemini,mistral,groq").lower().replace(" ", "")
+        order = os.environ.get("CHAPPIE_CHAIN", "gemini,groq,openrouter,mistral").lower().replace(" ", "")
         if order in ("off", "0", "no", "none"):
             order = "gemini"
         chain = []
@@ -536,6 +583,8 @@ def make_llm(provider, model="", **kw):
                 llm, nm = _mistral(), "mistral"
             elif name == "groq":
                 llm, nm = _groq(), "groq"
+            elif name == "openrouter":
+                llm, nm = _openrouter(), "openrouter"
             else:
                 continue
             if llm is not None and nm not in [c[0] for c in chain]:
@@ -548,7 +597,7 @@ def make_llm(provider, model="", **kw):
 
 # --- strucny vysledok ulohy + info o AI (pouziva task_client) ---
 
-AI_NAMES = {"gemini": "Gemini", "mistral": "Mistral", "groq": "Groq", "claude": "Claude"}
+AI_NAMES = {"gemini": "Gemini", "mistral": "Mistral", "groq": "Groq", "openrouter": "OpenRouter", "claude": "Claude"}
 
 AI_TXT = {
     "sk": {"ok": "Hotovo", "fail": "Zlyhalo", "cancel": "Zrušené", "in": "za", "s": "s",
@@ -650,7 +699,7 @@ def _test_png():
 if __name__ == "__main__":
     load_keys()
     png = _test_png()
-    for nm, build in (("gemini", _gemini), ("mistral", _mistral), ("groq", _groq)):
+    for nm, build in (("gemini", _gemini), ("mistral", _mistral), ("groq", _groq), ("openrouter", _openrouter)):
         llm = build()
         if llm is None:
             print("%-8s bez kluca - preskakujem" % nm)

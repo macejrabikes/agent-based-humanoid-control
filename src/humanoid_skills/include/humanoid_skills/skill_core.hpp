@@ -8,6 +8,7 @@
 // a sleduje postup podla IMU (otocenie) a odometrie (vzdialenost).
 #pragma once
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <map>
@@ -18,7 +19,7 @@
 namespace skills
 {
 
-enum class Kind {Stop, Walk, Turn, Arms, Wait, Gesture, Look, Getup, GoTo, Place, Where, Push};   // SKILLS2_PATCH, NAV_PATCH
+enum class Kind {Stop, Walk, Turn, Arms, Wait, Gesture, Look, Getup, GoTo, Place, Where, Push, Door, Room};   // SKILLS2_PATCH, NAV_PATCH, OPEN_PATCH
 
 struct SkillSpec
 {
@@ -56,7 +57,20 @@ struct Params
   double dance_step = 0.10;    // GEST_PATCH: dance - amplituda bocnych krokov [m/s] (0 = nohy stoja)
   double goto_tol = 0.15;      // NAV_PATCH: go_to_place - cielom je kruh s tymto polomerom [m]
   double push_gap = 0.42;      // PUSH_PATCH: push_forward - vzdialenost predmetu od lidaru, kde sa natiahnu ruky [m] (ruky dosiahnu ~0.34 m)
+  double door_min_w = 0.9, door_max_w = 3.5;   // OPEN_PATCH: go_through_opening - sirka priechodneho otvoru [m] (robot je ~0.5 m siroky)
+  double door_pre = 1.4, door_exit = 1.2;       // OPEN_PATCH: bod pred dverami a vzdialenost za rovinou steny, kde skill konci [m]
+  double door_speed = 0.35;                     // OPEN_PATCH: rychlost pri prechode [m/s]
   double stuck_s = 4.0, stuck_min = 0.15;   // STUCK_PATCH: ak za stuck_s prejde < stuck_min [m], robot stoji o prekazku
+};
+
+// OPEN_PATCH: najblizsia prekazka v kazdom 2-stupnovom vysecku okolo robota (index 0 = -180 st. = za robotom,
+// index 90 = priamo dopredu, uhol rastie dolava). Z toho sa hladaju otvory v stene (find_openings).
+constexpr int kBins = 180;
+constexpr double kBinDeg = 2.0;
+struct LidarBins
+{
+  std::array<double, kBins> r, x, y;     // vodorovna vzdialenost [m] (99 = nic) a poloha najblizsieho bodu v suradniciach robota
+  LidarBins() {r.fill(99.0); x.fill(0.0); y.fill(0.0);}
 };
 
 struct Sensors
@@ -71,6 +85,7 @@ struct Sensors
   double oyaw = 0.0;         // NAV_PATCH: natocenie robota v suradniciach odometrie [rad]
   bool have_lidar = false;   // cerstve data z lidaru
   double lid_front = 99, lid_back = 99, lid_left = 99, lid_right = 99;   // najblizsia prekazka v sektore [m], 99 = nic
+  LidarBins bins;            // OPEN_PATCH: vzdialenosti po 2 stupnoch (pre hladanie otvorov)
 };
 
 // NAV_PATCH: zapamatane miesto (suradnice odometrie)
@@ -128,6 +143,7 @@ struct LidarSectors
 {
   double front = 99, back = 99, left = 99, right = 99;
   int seen = 0;       // kolko platnych bodov prislo (kontrola, ze lidar naozaj meria)
+  LidarBins bins;     // OPEN_PATCH
   void add(double x, double y, double z, const LidarParams & p)
   {
     if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {return;}
@@ -143,6 +159,9 @@ struct LidarSectors
     if (h > p.max_range) {return;}
     const double deg = std::atan2(y, px) * 180.0 / M_PI;
     const double a = std::fabs(deg);
+    int k = static_cast<int>(std::floor((deg + 180.0) / kBinDeg));      // OPEN_PATCH
+    k = std::max(0, std::min(kBins - 1, k));
+    if (h < bins.r[k]) {bins.r[k] = h; bins.x[k] = px; bins.y[k] = y;}
     if (a <= p.front_deg) {front = std::min(front, h);}
     if (a >= p.back_deg) {back = std::min(back, h);}
     if (deg >= p.side_lo && deg <= p.side_hi) {left = std::min(left, h);}
@@ -164,6 +183,145 @@ inline LidarSectors lidar_from_cloud(const unsigned char * data, size_t n, size_
     r.add(x, y, z, p);
   }
   return r;
+}
+
+// OPEN_PATCH: otvor v stene (dvere, prechod) najdeny v LiDAR sken-e. Suradnice v systeme robota (x dopredu, y dolava).
+struct Opening
+{
+  double cx = 0, cy = 0;        // stred otvoru [m]
+  double nx = 1, ny = 0;        // jednotkova normala steny, smeruje cez otvor (od robota prec)
+  double width = 0;             // sirka medzi hranami otvoru [m]
+  double dist = 0;              // vzdialenost stredu od robota [m]
+  double bearing = 0;           // smer na stred [st.], + = vlavo
+};
+
+// Otvor = usek lucov, ktorych vzdialenost je o dost vacsia nez vzdialenost oboch okrajov (blizke hrany steny).
+// Okraje sa hladaju ako skok vzdialenosti medzi susednymi 2-stupnovymi vysecmi: skok hore zdola doprava = pravy okraj,
+// skok dole = lavy okraj. Dvojica okrajov je otvor, ak je medzi nimi (aspon 3 vysece) skoro vsetko "daleko"; ak je viac moznosti,
+// vyhra uzsi otvor (kazdy okraj patri najviac jednemu otvoru).
+// Hlada sa v rozsahu +-fov_deg od smeru dopredu. Vrati VSETKY otvory s width >= min_w (volajuci si vyberie podla sirky a smeru).
+inline std::vector<Opening> find_openings(const LidarBins & b, double min_w, double max_w, double max_dist, double fov_deg = 110.0)
+{
+  std::vector<Opening> out;
+  const int k0 = std::max(0, static_cast<int>(std::floor((180.0 - fov_deg) / kBinDeg)));
+  const int k1 = std::min(kBins - 1, static_cast<int>(std::floor((180.0 + fov_deg) / kBinDeg)));
+  const double jump = 0.6;       // [m] skok vzdialenosti = okraj
+  std::array<double, kBins> r = b.r;
+  for (auto & v : r) {if (v > 8.0) {v = 99.0;}}              // za 8 m su merania riedke a sumive -> berie sa ako "nic"
+  std::vector<int> rise, fall;
+  for (int i = k0; i < k1; ++i) {
+    if (r[i] < 90.0 && r[i + 1] - r[i] > jump) {rise.push_back(i);}      // blizka stena vpravo, dalej sa to otvara
+    if (r[i + 1] < 90.0 && r[i] - r[i + 1] > jump) {fall.push_back(i);}  // za otvorom zase blizka stena vlavo (blizka je vysec i + 1)
+  }
+  struct Cand {double width; int s, j; Opening op;};
+  std::vector<Cand> cands;
+  for (int j : fall) {
+    for (int s : rise) {
+      if (s > j - 3) {continue;}
+      const double ra = r[s], rc = r[j + 1];
+      if (std::fabs(rc - ra) > max_w) {continue;}
+      const double x1 = b.x[s], y1 = b.y[s], x2 = b.x[j + 1], y2 = b.y[j + 1];
+      const double raw_w = std::hypot(x2 - x1, y2 - y1);
+      // hrany su krajne body steny v susednych vysecoch: skutocna hrana je niekde medzi nimi, takze raw_w je o ~1 vysec (kBinDeg) vacsie
+      const double width = raw_w - kBinDeg * M_PI / 180.0 * 0.5 * (ra + rc);
+      if (raw_w < 1e-3 || width < min_w || width > max_w) {continue;}
+      int far_n = 0;
+      for (int k = s + 1; k <= j; ++k) {if (r[k] >= std::max(ra, rc) + 1.0) {++far_n;}}
+      if (far_n < 0.8 * (j - s)) {continue;}
+      Opening op;
+      op.cx = 0.5 * (x1 + x2);
+      op.cy = 0.5 * (y1 + y2);
+      const double tx = (x2 - x1) / raw_w, ty = (y2 - y1) / raw_w;
+      op.nx = ty;
+      op.ny = -tx;                                                // normala; ma smerovat od robota k otvoru
+      op.dist = std::hypot(op.cx, op.cy);
+      if (op.nx * op.cx + op.ny * op.cy < 0.0) {op.nx = -op.nx; op.ny = -op.ny;}
+      if (op.nx * op.cx + op.ny * op.cy < 0.35 * op.dist) {continue;}      // pozeram sa na stenu zo skraja (pozdlz steny), nie je to otvor
+      op.width = width;
+      op.bearing = std::atan2(op.cy, op.cx) * 180.0 / M_PI;
+      if (op.dist > max_dist) {continue;}
+      // OPEN_PATCH: po oboch stranach musi byt dlha rovna stena/zarubna v jednej rovine (nie skrinka, valec alebo stlp stojaci v izbe)
+      {
+        double fnx = op.nx, fny = op.ny;
+        {   // smer steny z bodov okolo otvoru (nie z okrajov, tie byvaju na bocnej ploche steny)
+          double m[2][2] = {{0, 0}, {0, 0}};
+          int cnt[2] = {0, 0};
+          for (int side = 0; side < 2; ++side) {
+            std::vector<int> ks;
+            for (int dk = 3; dk <= 9; ++dk) {
+              const int k = side == 0 ? j + 1 + dk : s - dk;
+              if (k >= 0 && k < kBins && r[k] < 90.0) {ks.push_back(k);}
+            }
+            if (ks.size() < 3) {continue;}
+            std::vector<double> d;
+            for (int k : ks) {d.push_back(fnx * b.x[k] + fny * b.y[k]);}
+            std::sort(d.begin(), d.end());
+            const double med = d[static_cast<size_t>(0.7 * (d.size() - 1))];      // predmety pred stenou su blizsie, stena je v horne casti
+            for (int k : ks) {
+              if (std::fabs(fnx * b.x[k] + fny * b.y[k] - med) < 0.3) {m[side][0] += b.x[k]; m[side][1] += b.y[k]; ++cnt[side];}
+            }
+          }
+          if (cnt[0] >= 3 && cnt[1] >= 3) {
+            double ux = m[0][0] / cnt[0] - m[1][0] / cnt[1], uy = m[0][1] / cnt[0] - m[1][1] / cnt[1];
+            const double un = std::hypot(ux, uy);
+            if (un > 0.3) {
+              ux /= un; uy /= un;
+              fnx = uy; fny = -ux;
+              if (fnx * op.nx + fny * op.ny < 0.0) {fnx = -fnx; fny = -fny;}
+            }
+          }
+        }
+        auto depth = [&](int k) {return fnx * b.x[k] + fny * b.y[k];};
+        // rovina steny na jednej strane = median hlbky bodov o niekolko vysecov dalej od okraja (hrana otvoru byva na bocnej ploche steny)
+        auto plane = [&](int from, int step, bool & ok) {
+          std::vector<double> d;
+          for (int dk = 3; dk <= 9; ++dk) {
+            const int k = from + step * dk;
+            if (k >= 0 && k < kBins && r[k] < 90.0) {d.push_back(depth(k));}
+          }
+          ok = d.size() >= 3;
+          if (!ok) {return 0.0;}
+          std::sort(d.begin(), d.end());
+          return d[static_cast<size_t>(0.7 * (d.size() - 1))];
+        };
+        auto flank = [&](int from, int step, double d0, double px, double py, double dx, double dy) {
+          double ext = 0.0;
+          int bad = 0, hidden = 0;
+          bool started = false;
+          for (int k = from; k >= 0 && k < kBins; k += step) {
+            if (r[k] >= 90.0) {if (++bad > (started ? 2 : 14)) {break;} continue;}
+            const double dd = depth(k) - d0;
+            if (std::fabs(dd) < 0.25) {
+              started = true; bad = 0;
+              ext = std::max(ext, (b.x[k] - px) * dx + (b.y[k] - py) * dy);
+            } else if (dd < 0.0 && ++hidden < 40) {      // predmet v izbe pred stenou zakryva vyhlad - preskoc
+              continue;
+            } else if (++bad > (started ? 2 : 14)) {break;}
+          }
+          return ext + 0.5 * kBinDeg * M_PI / 180.0 * 0.5 * (ra + rc);
+        };
+        bool okl = false, okr = false;
+        const double dl = plane(j + 1, 1, okl), dr = plane(s, -1, okr);
+        if (!okl && !okr) {continue;}
+        if (okl && okr && std::fabs(dl - dr) > 0.3) {continue;}
+        const double d0 = (okl && okr) ? 0.5 * (dl + dr) : (okl ? dl : dr);
+        const double e1 = depth(s), e2 = depth(j + 1);          // okraje otvoru lezia v rovine steny (najviac o hrubku steny hlbsie)
+        if (std::min(e1, e2) < d0 - 0.15 || std::max(e1, e2) > d0 + 0.7) {continue;}
+        const double el = okl ? flank(j + 1, 1, d0, x2, y2, tx, ty) : -1.0;
+        const double er = okr ? flank(s, -1, d0, x1, y1, -tx, -ty) : -1.0;
+        if (std::max(el, er) < 1.0 || (okl && okr && std::min(el, er) < 0.3)) {continue;}
+      }
+      cands.push_back({width, s, j, op});
+    }
+  }
+  std::sort(cands.begin(), cands.end(), [](const Cand & p, const Cand & q) {return p.width < q.width;});
+  std::vector<bool> used_s(kBins, false), used_j(kBins, false);
+  for (const auto & c : cands) {                        // najuzsie otvory maju prednost; okraj patri najviac jednemu otvoru
+    if (used_s[c.s] || used_j[c.j]) {continue;}
+    used_s[c.s] = used_j[c.j] = true;
+    out.push_back(c.op);
+  }
+  return out;
 }
 
 inline std::string fmt_dist(double d)
@@ -283,6 +441,22 @@ public:
       "with the LiDAR. The result lists the direction (0 = start direction, + left, - right) and distance of each, and the most open "
       "direction. The robot ends facing the start direction. Use it to find the way out or to look for walls and openings.";
     add(s);
+    s = {}; s.name = "go_through_opening"; s.kind = K::Door; s.has_value = true; s.unit = "m"; s.vmin = 1.0; s.vmax = 12.0; s.vdef = 8.0;
+    s.description = "Finds an OPENING in a wall (a doorway or any gap 0.9 to 3.5 m wide) with the LiDAR and walks through it to about 1.2 m behind the wall. "
+      "It SEARCHES BY ITSELF: it looks 110 degrees to each side, turns on the spot up to 360 degrees and, if there is no door in sight, walks to another "
+      "part of the room (towards the most open space, up to 4 times) and looks again, watching for a door all the time. 'value' = the maximum distance to "
+      "the opening in metres from where it looks (default 8). If several doors are visible it takes the one closest to the direction the robot faces and "
+      "not the one it has just come through, so turn_towards a specific door first if the task names one. It turns to the door, steps in front of it, "
+      "aligns with the door frame, centres itself and walks straight through. Fails with status no_opening if no passable gap is found anywhere "
+      "(the whole search is done, do not repeat it at once) and with status blocked if the robot gets stuck. Takes 15-90 s. Afterwards you are in the next room: "
+      "look at the picture. Robot must stand with arms down.";
+    add(s);
+    s = {}; s.name = "search_room"; s.kind = K::Room; s.has_value = true; s.unit = "m"; s.vmin = 1.0; s.vmax = 5.0; s.vdef = 3.0;
+    s.description = "Moves the robot to the NEXT UNEXPLORED SPOT of the room (towards the most open space, i.e. roughly through the middle, never to a spot it "
+      "has already visited) so the camera sees a new part of the room. 'value' = the longest hop in metres (default 3). Use it to look for something in a room "
+      "('find the red box'): look_around, and if the object is not in the pictures call search_room and look_around again, until the object is found or "
+      "search_room fails with status explored (the whole room has been visited). Stops in front of obstacles. Takes 5-20 s. Robot must stand with arms down.";
+    add(s);
     s = {}; s.name = "wait"; s.kind = K::Wait; s.has_value = true; s.unit = "s";
     s.vmin = 0.1; s.vmax = 30; s.vdef = 1.0; s.description = "Pocka dany pocet sekund."; add(s);
     for (auto & k : specs_) {
@@ -362,12 +536,13 @@ public:
       return fail(res, "no_hands", "Gesto '" + name + "' potrebuje robota s prstami (simulacia musi bezat s with_hands:=true). "
         "The robot has no hands with fingers: this gesture is not possible, use another skill (e.g. wave).");
     }
-    if (spec->kind == Kind::Place || spec->kind == Kind::Where || spec->kind == Kind::GoTo || spec->kind == Kind::Push) {
+    if (spec->kind == Kind::Place || spec->kind == Kind::Where || spec->kind == Kind::GoTo || spec->kind == Kind::Push ||
+      spec->kind == Kind::Door || spec->kind == Kind::Room) {
       if (!s.have_odom) {
         return fail(res, "no_odom", "Nemam data z odometrie (/chappie/odom), neviem urcit polohu.");
       }
     }
-    if ((spec->kind == Kind::GoTo || spec->kind == Kind::Push) && arms_up_) {
+    if ((spec->kind == Kind::GoTo || spec->kind == Kind::Push || spec->kind == Kind::Door || spec->kind == Kind::Room) && arms_up_) {
       return fail(res, "arms_up", "Ruky su hore - najprv arms_down.");
     }
     if (spec->kind == Kind::Place || spec->kind == Kind::GoTo) {
@@ -382,7 +557,7 @@ public:
         return fail(res, "unknown_place", m.str());
       }
     }
-    if (spec->to_obstacle) {
+    if (spec->to_obstacle || spec->kind == Kind::Door || spec->kind == Kind::Room) {
       if (!s.have_lidar) {
         return fail(res, "no_lidar", "Nemam cerstve data z lidaru (/lidar/points), neviem hladat prekazku.");
       }
@@ -430,6 +605,12 @@ public:
     push_msg_.clear();
     push_moved_ = 0.0;
     push_x0_ = push_y0_ = 0.0;
+    door_ph_ = 0; door_t_ = 0.0; door_settle_ = 0.0; door_turning_ = false; vy_cur_ = 0.0; w_cur_ = 0.0;     // OPEN_PATCH
+    door_prev_ = 0.0; door_face_t_ = 0.0;
+    door_rot_n_ = 0; door_rotating_ = false; door_rot_t_ = 0.0;
+    door_relocating_ = false; door_reloc_n_ = 0; door_move_t_ = door_look_t_ = 0.0;
+    door_vis_.clear(); door_vis_.push_back({s.ox, s.oy});
+    room_t_ = 0.0; room_moving_ = false; room_move_t_ = 0.0; lost_t_ = 0.0;
     if (spec->kind == Kind::GoTo) {
       const Place & pl = places_[static_cast<int>(std::lround(v))];
       tx_ = pl.x; ty_ = pl.y; tyaw_ = pl.yaw;
@@ -559,6 +740,12 @@ public:
       case Kind::Push:
         push_(o, s, dt);
         break;
+      case Kind::Door:
+        door_(o, s, dt);
+        break;
+      case Kind::Room:
+        room_(o, s, dt);
+        break;
     }
     if (!o.finished && cur_.kind != Kind::Stop && t_ > timeout_()) {
       std::string tmsg = "Skill " + cur_.name + " trval prilis dlho.";
@@ -597,6 +784,8 @@ private:
       case Kind::Getup: return 35.0;
       case Kind::GoTo: return goto_timeout_;
       case Kind::Push: return gest_total_ * 3.0 + 15.0;
+      case Kind::Door: return 150.0;
+      case Kind::Room: return 60.0;
       default: return 1e9;
     }
   }
@@ -608,7 +797,7 @@ private:
       return odom_used_ && s.have_odom ? std::hypot(s.ox - x0_, s.oy - y0_) : d_est_;
     }
     if (cur_.kind == Kind::Turn) {return std::fabs(turned_) * 180.0 / M_PI;}
-    if (cur_.kind == Kind::GoTo || cur_.kind == Kind::Push) {
+    if (cur_.kind == Kind::GoTo || cur_.kind == Kind::Push || cur_.kind == Kind::Door || cur_.kind == Kind::Room) {
       return s.have_odom ? std::hypot(s.ox - x0_, s.oy - y0_) : 0.0;
     }
     return 0.0;
@@ -1067,6 +1256,391 @@ private:
     }
   }
 
+  // ---- OPEN_PATCH: go_through_opening - najde otvor v stene, nastavi sa pred nim, vycentruje sa a prejde nim
+  void door_world_(const Sensors & s, double x, double y, double & wx, double & wy) const
+  {
+    const double c = std::cos(s.oyaw), sn = std::sin(s.oyaw);
+    wx = s.ox + c * x - sn * y;
+    wy = s.oy + sn * x + c * y;
+  }
+
+  // ulozi otvor (v suradniciach odometrie); alpha < 1 = zjemnenie predosleho odhadu novym meranim
+  void door_set_(const Sensors & s, const Opening & op, double alpha)
+  {
+    double wx, wy;
+    door_world_(s, op.cx, op.cy, wx, wy);
+    const double c = std::cos(s.oyaw), sn = std::sin(s.oyaw);
+    double nx = c * op.nx - sn * op.ny, ny = sn * op.nx + c * op.ny;
+    if (alpha < 1.0) {
+      wx = door_cx_ + alpha * (wx - door_cx_);
+      wy = door_cy_ + alpha * (wy - door_cy_);
+      nx = (1.0 - alpha) * door_nx_ + alpha * nx;
+      ny = (1.0 - alpha) * door_ny_ + alpha * ny;
+      door_w_ += alpha * (op.width - door_w_);
+    } else {
+      door_w_ = op.width;
+    }
+    const double n = std::hypot(nx, ny);
+    door_cx_ = wx; door_cy_ = wy;
+    door_nx_ = nx / n; door_ny_ = ny / n;
+  }
+
+  // zjemni polohu otvoru novym meraniam (berie len otvor blizko povodneho)
+  void door_refine_(const Sensors & s)
+  {
+    const auto ops = find_openings(s.bins, 0.3, 6.0, 12.0, 120.0);
+    const Opening * best = nullptr;
+    double best_d = 0.8;
+    for (const auto & op : ops) {
+      double wx, wy;
+      door_world_(s, op.cx, op.cy, wx, wy);
+      const double c = std::cos(s.oyaw), sn = std::sin(s.oyaw);
+      const double nx = c * op.nx - sn * op.ny, ny = sn * op.nx + c * op.ny;
+      const double d = std::hypot(wx - door_cx_, wy - door_cy_);
+      if (d < best_d && nx * door_nx_ + ny * door_ny_ > 0.8 && std::fabs(op.width - door_w_) < 0.5) {best = &op; best_d = d;}
+    }
+    if (best) {door_set_(s, *best, 0.4);}
+  }
+
+  // po prejdeni: okolo otvoru musi byt vidiet stenu (nie volny priestor). Vrati pocet bodov steny vlavo a vpravo od otvoru.
+  void door_verify_(const Sensors & s, int & nl, int & nr) const
+  {
+    nl = nr = 0;
+    const double tx = -door_ny_, ty = door_nx_;
+    for (int k = 0; k < kBins; ++k) {
+      if (s.bins.r[k] > 8.0) {continue;}
+      double wx, wy;
+      door_world_(s, s.bins.x[k], s.bins.y[k], wx, wy);
+      const double rx = wx - door_cx_, ry = wy - door_cy_;
+      const double depth = rx * door_nx_ + ry * door_ny_, lat = rx * tx + ry * ty;
+      if (depth < -0.4 || depth > 0.9) {continue;}                     // v rovine steny (aj s jej hrubkou)
+      if (lat > door_w_ / 2 + 0.1 && lat < door_w_ / 2 + 1.5) {++nl;}
+      if (lat < -door_w_ / 2 - 0.1 && lat > -door_w_ / 2 - 1.5) {++nr;}
+    }
+  }
+
+  // vyber otvoru zo zoznamu: najblizsi smerom, ktory robot pozera; dvere, cez ktore prave presiel, az ako poslednu moznost (fb)
+  const Opening * door_pick_(const Sensors & s, const std::vector<Opening> & all, int & narrow, double & narrow_w, int & wide,
+    const Opening *& fb) const
+  {
+    const Opening * best = nullptr;
+    fb = nullptr;
+    double best_cost = 0.0, fb_cost = 0.0;
+    for (const auto & op : all) {
+      if (op.width < p_.door_min_w) {++narrow; narrow_w = std::max(narrow_w, op.width); continue;}
+      if (op.width > p_.door_max_w) {++wide; continue;}
+      const double cost = std::fabs(op.bearing) + 3.0 * op.dist;
+      double wx, wy;
+      door_world_(s, op.cx, op.cy, wx, wy);
+      bool bad = false;
+      for (const auto & v : door_bad_) {if (std::hypot(wx - v.first, wy - v.second) < 1.2) {bad = true;}}
+      if (bad) {continue;}
+      if (door_last_ok_ && std::hypot(wx - door_last_x_, wy - door_last_y_) < 1.2) {
+        if (!fb || cost < fb_cost) {fb = &op; fb_cost = cost;}
+        continue;
+      }
+      if (!best || cost < best_cost) {best = &op; best_cost = cost;}
+    }
+    return best;
+  }
+
+  // dalsie miesto na prehladavanie izby: smerom k najvolnejsiemu priestoru (stred izby), nie tam, kde uz bol
+  bool room_plan_(const Sensors & s, const std::vector<std::pair<double, double>> & vis, double maxhop, double minsep, double & rx, double & ry) const
+  {
+    double best_c = 0.0, best_a = 0.0, best_l = 0.0;
+    for (int a = -180; a < 180; a += 6) {
+      double c = 8.0;
+      for (int d = -18; d <= 18; d += 2) {
+        const int k = ((static_cast<int>(std::floor((a + d + 180) / kBinDeg)) % kBins) + kBins) % kBins;
+        c = std::min(c, std::min(s.bins.r[k], 8.0));
+      }
+      if (c < 2.2) {continue;}
+      const double l = std::min(maxhop, c - 1.0);
+      const double tx = s.ox + l * std::cos(s.oyaw + a * M_PI / 180.0), ty = s.oy + l * std::sin(s.oyaw + a * M_PI / 180.0);
+      double dv = 4.0;
+      for (const auto & v : vis) {dv = std::min(dv, std::hypot(tx - v.first, ty - v.second));}
+      if (dv < minsep) {continue;}                        // tam uz bol
+      const double score = c + 0.8 * std::min(dv, 4.0);                  // volny priestor a zaroven kus od miest, kde uz bol
+      if (score > best_c) {best_c = score; best_a = a; best_l = l;}
+    }
+    if (best_c <= 0.0) {return false;}
+    rx = s.ox + best_l * std::cos(s.oyaw + best_a * M_PI / 180.0);
+    ry = s.oy + best_l * std::sin(s.oyaw + best_a * M_PI / 180.0);
+    return true;
+  }
+
+  bool door_plan_reloc_(const Sensors & s)
+  {
+    if (!room_plan_(s, door_vis_, 3.0, 1.4, door_rx_, door_ry_)) {return false;}
+    door_vis_.push_back({door_rx_, door_ry_});
+    door_relocating_ = true; door_move_t_ = 0.0; door_look_t_ = 0.0; door_turning_ = true;
+    ++door_reloc_n_;
+    return true;
+  }
+
+  // senzory musia byt k dispozicii; kratky vypadok (do 3 s) sa pretrva v pokoji, az dlhsi skill ukonci
+  bool door_sensors_ok_(Output & o, const Sensors & s, double dt, const std::string & who)
+  {
+    if (s.have_odom && s.have_lidar && !arms_up_) {lost_t_ = 0.0; return true;}
+    lost_t_ += dt;
+    if (arms_up_ || lost_t_ > 3.0) {
+      finish_(o, false, "no_lidar", who + ": lost the LiDAR or odometry data for more than 3 s, stopping.", s);
+      return false;
+    }
+    v_cur_ = 0.0; w_cur_ = 0.0; vy_cur_ = 0.0;
+    o.vx = o.vy = o.wz = 0.0;
+    return false;
+  }
+
+  // jazda k bodu (pri hladani dveri)
+  void door_walk_to_(Output & o, const Sensors & s, double dt, double tx, double ty, bool & arrived)
+  {
+    const double dx = tx - s.ox, dy = ty - s.oy, dist = std::hypot(dx, dy);
+    const double herr = wrap_pi(std::atan2(dy, dx) - s.oyaw);
+    double vt = 0.0, wt = 0.0;
+    arrived = dist < 0.25 || (p_.lidar_guard && s.lid_front < 0.8 && v_cur_ > 0.05 && dist > 0.5);
+    if (!arrived) {
+      if (std::fabs(herr) > 0.6) {door_turning_ = true;} else if (std::fabs(herr) < 0.2) {door_turning_ = false;}
+      if (door_turning_) {
+        wt = clampd(1.2 * herr, -p_.turn_rate, p_.turn_rate);
+      } else {
+        vt = std::min(p_.walk_speed, std::sqrt(2.0 * p_.decel * std::max(dist - 0.1, 0.0)) + 0.1);
+        wt = clampd(1.5 * herr, -p_.heading_max, p_.heading_max);
+      }
+    }
+    v_cur_ += clampd(vt - v_cur_, -p_.decel * dt, p_.accel * dt);
+    w_cur_ += clampd(wt - w_cur_, -p_.accel * dt, p_.accel * dt);
+    vy_cur_ += clampd(0.0 - vy_cur_, -p_.accel * dt, p_.accel * dt);
+    o.vx = v_cur_; o.vy = vy_cur_; o.wz = w_cur_;
+  }
+
+  // search_room: presun na dalsie neprehladane miesto v izbe
+  void room_(Output & o, const Sensors & s, double dt)
+  {
+    if (!door_sensors_ok_(o, s, dt, "search_room")) {return;}
+    o.state = "searching_room";
+    room_t_ += dt;
+    if (!room_moving_) {
+      if (room_t_ < 0.6) {return;}
+      bool near_known = false;
+      for (const auto & v : room_vis_) {if (std::hypot(s.ox - v.first, s.oy - v.second) < 5.0) {near_known = true;}}
+      if (!near_known) {room_vis_.clear();}                // iny priestor (napr. po prechode dverami) - zacni odznova
+      bool at_known = false;
+      for (const auto & v : room_vis_) {if (std::hypot(s.ox - v.first, s.oy - v.second) < 0.8) {at_known = true;}}
+      if (!at_known) {room_vis_.push_back({s.ox, s.oy});}
+      if (!room_plan_(s, room_vis_, value_, 2.5, room_rx_, room_ry_)) {
+        std::ostringstream m;
+        m << "search_room: nothing new to explore here - " << room_vis_.size() << " spot(s) of this room have been visited and the free space around is "
+          << "used up (LIDAR: front " << fmt_dist(s.lid_front) << ", left " << fmt_dist(s.lid_left) << ", right " << fmt_dist(s.lid_right)
+          << ", back " << fmt_dist(s.lid_back) << " m). The whole room has been searched: finish and tell the user what you found (or did not find).";
+        finish_(o, false, "explored", m.str(), s);
+        return;
+      }
+      room_vis_.push_back({room_rx_, room_ry_});
+      room_moving_ = true; room_move_t_ = 0.0; door_turning_ = true;
+    }
+    room_move_t_ += dt;
+    bool arrived = false;
+    door_walk_to_(o, s, dt, room_rx_, room_ry_, arrived);
+    o.progress = clampd(room_move_t_ / 12.0, 0.0, 0.9);
+    if (arrived || room_move_t_ > 25.0) {
+      v_cur_ = 0.0; w_cur_ = 0.0;
+      std::ostringstream m;
+      m << "search_room: moved to a new spot of the room, now at " << pos_text_(s.ox, s.oy, s.oyaw) << " (" << room_vis_.size()
+        << " spot(s) visited so far). Now look_around or look to see this part of the room.";
+      finish_(o, true, "ok", m.str(), s);
+    }
+  }
+
+  void door_(Output & o, const Sensors & s, double dt)
+  {
+    if (!door_sensors_ok_(o, s, dt, "go_through_opening")) {return;}
+    door_t_ += dt;
+    double vt = 0.0, wt = 0.0, vyt = 0.0;
+    if (door_ph_ == 0) {                                   // 0) pockaj na ustaleny sken a vyber otvor
+      o.state = "searching_opening";
+      if (door_rotating_) {                                // otacanie na mieste, aby sa presiel cely okolit (po 120 st.)
+        door_rot_t_ += dt;
+        const double e = wrap_pi(door_rot_tgt_ - s.oyaw);
+        if (std::fabs(e) < 0.12 || door_rot_t_ > 10.0) {
+          door_rotating_ = false; door_t_ = 0.0;
+        } else {
+          wt = clampd(1.5 * e, -p_.turn_rate, p_.turn_rate);
+          if (std::fabs(wt) < 0.25) {wt = (e > 0 ? 0.25 : -0.25);}
+        }
+        v_cur_ += clampd(0.0 - v_cur_, -p_.decel * dt, p_.accel * dt);
+        w_cur_ += clampd(wt - w_cur_, -p_.accel * dt, p_.accel * dt);
+        o.vx = v_cur_; o.vy = 0.0; o.wz = w_cur_;
+        return;
+      }
+      std::vector<Opening> all;
+      const Opening * best = nullptr, * fb = nullptr;
+      double narrow_w = 0.0;
+      int narrow = 0, wide = 0;
+      if (door_relocating_) {                              // presun na dalsie miesto; pocas jazdy sa stale pozera po dverach
+        door_move_t_ += dt;
+        door_look_t_ += dt;
+        if (door_look_t_ >= 0.25) {
+          door_look_t_ = 0.0;
+          all = find_openings(s.bins, 0.3, 8.0, value_, 110.0);
+          best = door_pick_(s, all, narrow, narrow_w, wide, fb);
+        }
+        if (!best) {
+          bool arrived = false;
+          door_walk_to_(o, s, dt, door_rx_, door_ry_, arrived);
+          if (arrived || door_move_t_ > 16.0) {door_relocating_ = false; door_t_ = 0.0; door_rot_n_ = 0;}
+          return;
+        }
+        door_relocating_ = false;
+      } else {
+        if (door_t_ < 0.6) {return;}
+        all = find_openings(s.bins, 0.3, 8.0, value_, 110.0);
+        best = door_pick_(s, all, narrow, narrow_w, wide, fb);
+        if (!best && door_rot_n_ < 2) {                    // v tomto smere nic - otoc sa o 120 st. a hladaj dalej
+          ++door_rot_n_;
+          door_rot_tgt_ = wrap_pi(s.oyaw + 2.0944);
+          door_rotating_ = true; door_rot_t_ = 0.0;
+          return;
+        }
+        if (!best && door_reloc_n_ < 4 && door_plan_reloc_(s)) {return;}      // nic nevidno ani dookola - presun sa inam v izbe
+        if (!best && fb) {best = fb;}                      // jedine dvere su tie, cez ktore prisiel
+      }
+      if (!best) {
+        std::ostringstream m;
+        m << "go_through_opening: no passable opening found within " << fx(value_, 1) << " m. I looked all the way round (360 degrees) at "
+          << (door_reloc_n_ + 1) << " place(s) in this room and found no door (a gap in a wall " << fx(p_.door_min_w, 2) << "-" << fx(p_.door_max_w, 1) << " m wide).";
+        if (narrow > 0) {
+          m << " I saw " << narrow << " gap(s) that are too narrow for the robot (the widest " << fx(narrow_w, 2) << " m).";
+        }
+        if (wide > 0) {m << " There is also a very wide open area (no door frame).";}
+        m << " LIDAR now: front " << fmt_dist(s.lid_front) << ", left " << fmt_dist(s.lid_left) << ", right " << fmt_dist(s.lid_right)
+          << ", back " << fmt_dist(s.lid_back) << " m. The whole search is done: do NOT call it again right away. Finish and tell the user the door was not found, "
+          << "or try once more only after something has changed (e.g. a different part of the world).";
+        finish_(o, false, "no_opening", m.str(), s);
+        return;
+      }
+      door_set_(s, *best, 1.0);
+      door_w0_ = best->width; door_d0_ = best->dist; door_b0_ = best->bearing;
+      const double sa0 = (s.ox - door_cx_) * door_nx_ + (s.oy - door_cy_) * door_ny_;
+      door_ph_ = (sa0 > -0.6 * p_.door_pre) ? 2 : 1;       // uz je pri dverach -> rovno sa narovnaj
+      door_settle_ = 0.0; stuck_t_ = 0.0; door_prev_ = 1e9;
+    }
+    const double sa = (s.ox - door_cx_) * door_nx_ + (s.oy - door_cy_) * door_ny_;      // vzdialenost od roviny dveri (< 0 = pred nimi)
+    const double dcenter = std::hypot(door_cx_ - s.ox, door_cy_ - s.oy);
+    if (door_ph_ == 1) {                                   // 1) chod k bodu pred dverami
+      o.state = "approaching_opening";
+      if (dcenter > 0.9) {door_refine_(s);}
+      const double px = door_cx_ - door_nx_ * p_.door_pre, py = door_cy_ - door_ny_ * p_.door_pre;
+      const double dx = px - s.ox, dy = py - s.oy, dist = std::hypot(dx, dy);
+      const double herr = wrap_pi(std::atan2(dy, dx) - s.oyaw);
+      o.progress = clampd(0.5 * (1.0 - dcenter / std::max(door_d0_, 0.5)), 0.0, 0.5);
+      if (dist < 0.2 || sa > -0.6 * p_.door_pre) {
+        door_ph_ = 2; door_settle_ = 0.0;
+      } else {
+        if (std::fabs(herr) > 0.6) {door_turning_ = true;} else if (std::fabs(herr) < 0.2) {door_turning_ = false;}
+        if (door_turning_) {
+          wt = clampd(1.2 * herr, -p_.turn_rate, p_.turn_rate);
+        } else {
+          if (p_.lidar_guard && s.lid_front < p_.block_dist && dcenter > 1.3 && v_cur_ > 0.05) {
+            finish_(o, false, "blocked", "go_through_opening: an obstacle " + fmt_dist(s.lid_front) + " m ahead is in the way to the opening (" +
+              fx(dcenter, 1) + " m away). Walk around it (turn, walk_forward) and call go_through_opening again.", s);
+            return;
+          }
+          vt = std::min(p_.walk_speed, std::sqrt(2.0 * p_.decel * std::max(dist - 0.1, 0.0)) + 0.1);
+          wt = clampd(1.5 * herr, -p_.heading_max, p_.heading_max);
+          if (v_cur_ > 0.2) {
+            stuck_t_ += dt;
+            if (stuck_t_ >= p_.stuck_s) {
+              if (door_prev_ - dist < p_.stuck_min) {
+                finish_(o, false, "blocked", "go_through_opening: the robot does not move (something blocks the way), the opening is " +
+                  fx(dcenter, 1) + " m away. Go around the obstacle and call it again.", s);
+                return;
+              }
+              stuck_t_ = 0.0; door_prev_ = dist;
+            }
+          } else {
+            stuck_t_ = 0.0; door_prev_ = dist;
+          }
+        }
+      }
+    }
+    if (door_ph_ == 2) {                                   // 2) narovnaj sa kolmo na stenu
+      o.state = "facing_opening";
+      door_face_t_ += dt;
+      const double herr = wrap_pi(std::atan2(door_ny_, door_nx_) - s.oyaw);
+      o.progress = 0.5;
+      if (std::fabs(herr) < 0.1 || door_face_t_ > 12.0) {          // po 12 s sa ide aj s mensou odchylkou (aby sa nezasekol)
+        door_settle_ += dt;
+        if (door_settle_ >= p_.settle_s) {door_ph_ = 3; stuck_t_ = 0.0; door_prev_ = sa; door_settle_ = 0.0;}
+      } else {
+        door_settle_ = 0.0;
+        wt = clampd(1.2 * herr, -p_.turn_rate, p_.turn_rate);
+      }
+    }
+    if (door_ph_ == 3) {                                   // 3) prejdi rovno, drz stred medzi stlpikmi
+      o.state = "passing_opening";
+      const double e = (s.ox - door_cx_) * (-door_ny_) + (s.oy - door_cy_) * door_nx_;     // + = robot je vlavo od stredu
+      const double herr = wrap_pi(std::atan2(door_ny_, door_nx_) - s.oyaw);
+      const double rem = p_.door_exit - sa;
+      wt = clampd(1.5 * herr, -0.3, 0.3);
+      vyt = clampd(-1.2 * e, -0.2, 0.2);
+      if (std::fabs(sa) < 0.45 && s.lid_left < 1.4 && s.lid_right < 1.4) {          // v otvore: vystred podla lidaru
+        vyt = clampd(0.5 * (s.lid_left - s.lid_right), -0.15, 0.15);
+      }
+      o.progress = clampd(0.5 + 0.5 * (sa + p_.door_pre) / (p_.door_exit + p_.door_pre), 0.5, 1.0);
+      if (sa < -0.4 && std::fabs(e) > 0.12) {
+        vt = 0.0;                                         // najprv sa posun bokom do stredu
+      } else if (rem <= std::max(0.03, v_cur_ * p_.lag)) {
+        vt = 0.0; vyt = 0.0; wt = 0.0;
+        door_settle_ += dt;
+        if (door_settle_ >= p_.settle_s && v_cur_ < 0.05) {
+          std::ostringstream m;
+          m << "go_through_opening: passed through the opening (" << fx(door_w0_, 2) << " m wide, it was " << fx(door_d0_, 1) << " m away, "
+            << fx(std::fabs(door_b0_), 0) << " deg to the " << (door_b0_ >= 0 ? "left" : "right") << "). The robot now stands "
+            << fx(std::max(sa, 0.0), 1) << " m behind the wall, facing away from the doorway. Now at " << pos_text_(s.ox, s.oy, s.oyaw)
+            << ". Check the picture and the LIDAR: you are in the next room.";
+          int nl = 0, nr = 0;
+          door_verify_(s, nl, nr);
+          if (nl + nr < 6 || std::max(nl, nr) < 4) {          // okolo "dveri" nie je stena -> nebola to medzera v stene
+            door_bad_.push_back({door_cx_, door_cy_});
+            std::ostringstream f;
+            f << "go_through_opening: FAILED - I drove through a gap (" << fx(door_w0_, 2) << " m wide), but the LiDAR now sees no wall on either side of it "
+              << "(wall points left " << nl << ", right " << nr << "), so it was NOT a doorway (probably a gap between objects). I did not change rooms. "
+              << "Now at " << pos_text_(s.ox, s.oy, s.oyaw) << ". Look at the picture for a real door with a frame and call go_through_opening again "
+              << "(this gap will be ignored).";
+            finish_(o, false, "not_through", f.str(), s);
+            return;
+          }
+          door_last_ok_ = true; door_last_x_ = door_cx_; door_last_y_ = door_cy_; room_vis_.clear();
+          m << " Wall check: " << nl << "+" << nr << " wall points around the doorway behind me.";
+          finish_(o, true, "ok", m.str(), s);
+          return;
+        }
+      } else {
+        vt = std::min(p_.door_speed, std::sqrt(2.0 * p_.decel * std::max(rem, 0.0)) + 0.08);
+        if (v_cur_ > 0.2) {
+          stuck_t_ += dt;
+          if (stuck_t_ >= p_.stuck_s) {
+            if (sa - door_prev_ < p_.stuck_min) {
+              finish_(o, false, "blocked", "go_through_opening: the robot is stuck in the opening (the doorway is probably too narrow or something "
+                "blocks it); it is " + fx(std::max(sa, 0.0), 2) + " m behind the wall plane. Use walk_backward and try again or look at the picture.", s);
+              return;
+            }
+            stuck_t_ = 0.0; door_prev_ = sa;
+          }
+        } else {
+          stuck_t_ = 0.0; door_prev_ = sa;
+        }
+      }
+    }
+    v_cur_ += clampd(vt - v_cur_, -p_.decel * dt, p_.accel * dt);
+    w_cur_ += clampd(wt - w_cur_, -p_.accel * dt, p_.accel * dt);
+    vy_cur_ += clampd(vyt - vy_cur_, -p_.accel * dt, p_.accel * dt);
+    o.vx = v_cur_;
+    o.vy = vy_cur_;
+    o.wz = w_cur_;
+  }
+
   Params p_;
   std::vector<SkillSpec> specs_;
   SkillSpec cur_;
@@ -1090,6 +1664,21 @@ private:
   std::string push_status_ = "ok", push_msg_;
   double push_moved_ = 0, push_x0_ = 0, push_y0_ = 0;
   double push_appr_ = 0, push_ax0_ = 0, push_ay0_ = 0, push_t_ = 0;   // PUSH_PATCH
+  // OPEN_PATCH: go_through_opening
+  int door_ph_ = 0;
+  bool door_turning_ = false, door_rotating_ = false;
+  int door_rot_n_ = 0;
+  double door_rot_tgt_ = 0, door_rot_t_ = 0;
+  bool door_relocating_ = false, door_last_ok_ = false;
+  int door_reloc_n_ = 0;
+  double door_rx_ = 0, door_ry_ = 0, door_move_t_ = 0, door_look_t_ = 0, door_last_x_ = 0, door_last_y_ = 0;
+  std::vector<std::pair<double, double>> door_vis_;      // kde uz robot hladal dvere
+  std::vector<std::pair<double, double>> door_bad_;      // medzery, o ktorych sa ukazalo, ze nie su dvere (persistuje)
+  std::vector<std::pair<double, double>> room_vis_;      // kde uz robot prehladaval izbu (search_room), pamata si aj medzi volaniami
+  bool room_moving_ = false;
+  double room_t_ = 0, room_move_t_ = 0, room_rx_ = 0, room_ry_ = 0, lost_t_ = 0;
+  double door_t_ = 0, door_settle_ = 0, door_prev_ = 0, vy_cur_ = 0, door_face_t_ = 0;
+  double door_cx_ = 0, door_cy_ = 0, door_nx_ = 1, door_ny_ = 0, door_w_ = 0, door_w0_ = 0, door_d0_ = 0, door_b0_ = 0;
 };
 
 }  // namespace skills

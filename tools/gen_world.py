@@ -14,6 +14,7 @@ automaticky aj do install/humanoid_gazebo/share/humanoid_gazebo/worlds/ (ak exis
 
 Znaky mapy (1 znak = 0.5 x 0.5 m, horny riadok = sever):
   #  stena (vyska 1.5 m)        =  nizka stena (0.6 m)       .  volne (aj medzera = dvere)
+  D  dvere: volne bunky v stene (sirka 1.5 m); po stranach tenka hneda zarubna (len vizualna, bez kolizie) a na podlahe zelena rohozka
   S  start robota (musi byt prave jeden; svet sa posunie tak, ze S je v pocitku suradnic, kde robota drzi zaves)
   B  oranzova skrina 0.9 m      R  cervena kocka 0.6 m       C  zeleny valec (r 0.45, v 1.5 m)
   P  ruzovy valec (r 0.45, v 1.0 m)   T  siv stlp 0.4 m (v 1.5 m)
@@ -30,7 +31,7 @@ from collections import deque
 CELL = 0.5
 WALL_H, LOW_H = 1.5, 0.6
 COL = {"wall": (0.85, 0.85, 0.88), "low": (0.6, 0.6, 0.2), "B": (0.9, 0.4, 0.1), "R": (0.85, 0.15, 0.15),
-       "C": (0.3, 0.7, 0.3), "P": (0.7, 0.2, 0.5), "T": (0.4, 0.4, 0.45), "p": (0.2, 0.5, 0.8)}
+       "C": (0.3, 0.7, 0.3), "F": (0.45, 0.28, 0.12), "D": (0.1, 0.65, 0.2), "P": (0.7, 0.2, 0.5), "T": (0.4, 0.4, 0.45), "p": (0.2, 0.5, 0.8)}
 
 
 def mat(c):
@@ -42,6 +43,12 @@ def static_model(name, x, y, z, geom, colour):
     return ('    <model name="%s"><static>true</static><pose>%.3f %.3f %.3f 0 0 0</pose><link name="link">'
             '<collision name="collision"><geometry>%s</geometry></collision>'
             '<visual name="visual"><geometry>%s</geometry>%s</visual></link></model>\n' % (name, x, y, z, geom, geom, mat(colour)))
+
+
+def visual_only(name, x, y, z, geom, colour):
+    """bez kolizie (rohozka na podlahe)"""
+    return ('    <model name="%s"><static>true</static><pose>%.3f %.3f %.3f 0 0 0</pose><link name="link">'
+            '<visual name="visual"><geometry>%s</geometry>%s</visual></link></model>\n' % (name, x, y, z, geom, mat(colour)))
 
 
 def box(sx, sy, sz):
@@ -79,10 +86,40 @@ def build_models(grid, start):
     X = lambda c: (c - sc) * CELL
     Y = lambda r: (sr - r) * CELL
     out, n = [], {}
+    h_, w_ = len(grid), max(len(r) for r in grid)
+
+    def is_door(r, c):
+        return 0 <= r < h_ and 0 <= c < len(grid[r]) and grid[r][c] == "D"
+    # zarubna: tenke hnede pasiky na koncoch steny po oboch stranach dveri (len vizualne, geometria sa nemeni)
+    FR, FD = 0.10, 0.04                          # sirka pasika [m] a o kolko vyciaha zo steny [m]
+    nf = 0
+    for r in range(len(grid)):
+        for c in range(len(grid[r])):
+            if grid[r][c] != "D":
+                continue
+            for dr, dc in ((0, 1), (1, 0)):      # os radu dveri: (0,1) = dvere vo vodorovnej stene, (1,0) = vo zvislej
+                if not (is_door(r - dr, c - dc) or is_door(r + dr, c + dc)):
+                    continue
+                for step in (-1, 1):
+                    if is_door(r + step * dr, c + step * dc):
+                        continue                 # nie je to koniec radu
+                    wr, wc = r + step * dr, c + step * dc
+                    if not (0 <= wr < len(grid) and 0 <= wc < len(grid[wr]) and grid[wr][wc] == "#"):
+                        continue
+                    nf += 1
+                    off = step * (CELL / 2 + (FR - FD) / 2)                 # stred pasika od stredu bunky dveri
+                    cx, cy = X(c) + (off if dc else 0.0), Y(r) - (off if dr else 0.0)
+                    sx, sy = (FR + FD, CELL + 2 * FD) if dc else (CELL + 2 * FD, FR + FD)
+                    out.append(visual_only("doorframe_%d" % nf, cx, cy, (WALL_H + 0.02) / 2, box(sx, sy, WALL_H + 0.02), COL["F"]))
     for r, row in enumerate(grid):
         c = 0
         while c < len(row):
             ch = row[c]
+            if ch == "D":
+                n["D"] = n.get("D", 0) + 1
+                out.append(visual_only("doormat_%d" % n["D"], X(c), Y(r), 0.003, box(CELL, CELL, 0.006), COL["D"]))
+                c += 1
+                continue
             if ch in "#=":                       # zluci vodorovne rady do jednej steny
                 c2 = c
                 while c2 + 1 < len(row) and row[c2 + 1] == ch:
@@ -206,7 +243,7 @@ def gen_rooms(rng, size_m):
                 g[r][c] = "#"
             dc = rng.randint(c0 + 2, c1 - 4)
             for c in range(dc, dc + 3):
-                g[r][c] = "."
+                g[r][c] = "D"
             doors.append((r, dc + 1))
             split(r0, c0, r - 1, c1, depth + 1)
             split(r + 1, c0, r1, c1, depth + 1)
@@ -216,7 +253,7 @@ def gen_rooms(rng, size_m):
                 g[r][c] = "#"
             dr = rng.randint(r0 + 2, r1 - 4)
             for r in range(dr, dr + 3):
-                g[r][c] = "."
+                g[r][c] = "D"
             doors.append((dr + 1, c))
             split(r0, c0, r1, c - 1, depth + 1)
             split(r0, c + 1, r1, c1, depth + 1)
