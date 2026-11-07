@@ -7,6 +7,7 @@ Vypis:  Rozmýšľam... -> Vidím / Úvaha -> Plánované akcie ([ ] čaká, [>]
         -> Zamietnuté akcie (kontrola výstupu AI) -> na konci výsledok.
 """
 import json
+import os
 import shutil
 import sys
 import textwrap
@@ -129,7 +130,8 @@ class View:
             self.out.write(self.c("90", " (%s s)" % rest) + "\n")
             self.llm_wait = False
         elif kind == "obs":
-            self.w("    %s: %s" % (T[self.lang]["see"], rest))
+            if os.environ.get("CHAPPIE_SHOW_OBS") == "1":       # OBS_PATCH: predvolene sa 'Vidim' neukazuje
+                self.w("    %s: %s" % (T[self.lang]["see"], rest))
         elif kind == "why":
             self.w("    %s: %s" % (T[self.lang]["why"], rest))
         elif kind == "plan":
