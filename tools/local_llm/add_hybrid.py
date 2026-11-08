@@ -37,7 +37,7 @@ LOCAL_GLOSS = {"clap": "applause, clap hands", "cheer": "joy or victory, both ar
 LOCAL_VISION = re.compile(
     r"(vid|farb|červen|cerven|modr|zelen|žlt|zlt|škatu|skatu|box|krabic|find|nájdi|najdi|hľad|hlad|search|look|pozri|pozer|"
     r"opíš|opis|describe|koľko|kolko|how many|count|dver|door|stien|wall|prekáž|prekaz|obstacle|k nej|k nemu|toward|"
-    r"push|posu|tlač|tlac|miest|place|room|where|kde)", re.I)
+    r"push|posu|tlač|tlac|miest|place|room|where|kde|sten|kym|kým|popri|okolo|vedla|until|along|around)", re.I)
 # co zo zadania sa musi objavit v plane (inak plan nepokryva zadanie a ulohu dostane Gemini)
 LOCAL_NEED = (
     (re.compile(r"oto[cč]|turn|rotate", re.I), ("turn_",)),
@@ -48,6 +48,19 @@ LOCAL_NEED = (
     (re.compile(r"poklon|bow", re.I), ("bow",)),
     (re.compile(r"zdvihni|raise|ruk[uy]", re.I), ("raise_", "arms_down")),
 )
+
+
+def _complex_task(task):
+    """True, ak zadanie nevyzera ako jednoducha uloha (rovnaky zoznam slov ako kratky prompt, prompt_select.py); bez prompt_select False"""
+    try:
+        from . import prompt_select
+    except ImportError:
+        try:
+            import prompt_select
+        except ImportError:
+            return False
+    t = prompt_select.fold(task)
+    return len(t) > 220 or bool(prompt_select.COMPLEX.search(t)) or not prompt_select.SIMPLE.search(t)
 
 
 class LocalFirstLLM:
@@ -94,6 +107,8 @@ class LocalFirstLLM:
             self._skip("robot lezi")
         if LOCAL_VISION.search(task):
             self._skip("uloha vyzaduje obraz/okolie")
+        if _complex_task(task):
+            self._skip("zlozitejsie zadanie")
         i = system.find("Skill catalog (JSON):")
         try:
             specs = {s["name"]: s for s in json.loads(system[i + len("Skill catalog (JSON):"):].strip())}

@@ -15,6 +15,11 @@ import os
 import re
 import time
 
+try:
+    from . import prompt_select
+except ImportError:          # spustene samostatne (nie ako balik)
+    import prompt_select
+
 LOOK = {"name": "look",
         "description": "Take a camera picture WITHOUT moving. Every picture taken during your plan is shown to you "
                        "together at the next step. Use it between movements when you need to see something."}
@@ -87,6 +92,11 @@ GOING TO AN OBJECT YOU SEE (box, pillar, person...):
 - If the object is NOT in the picture, search: turn_left 60, look, turn_left 60, look, ... (the view is 80 degrees wide, so
   60 degree steps overlap), until you see it. Do not walk anywhere before you have seen the object.
 - Distances: after turn_towards the LIDAR "front" distance is the distance to the object straight ahead.
+- walk_to_object does both in ONE action: give it the ruler percent of the object and it turns, walks straight to the object and
+  stops 0.7 m in front of it (LiDAR). Prefer it to turn_towards + walk_to_obstacle. Plan only "look" (or push_forward) after it.
+- go_around_obstacle: if an obstacle (box, pillar...) stands in the way straight ahead, use it instead of steering around by hand:
+  it steps aside, passes the obstacle and returns to the original line facing the original direction. Fails with no_room when
+  both sides are blocked (long wall): then go_through_opening or turn away. Afterwards look at the picture and continue.
 
 HOW TO WORK (speed matters, every reply of yours costs seconds):
 - Plan the WHOLE task at once: return the complete ordered list of actions you can already decide from what you see
@@ -129,9 +139,9 @@ Rules:
   in the result (it must show at least 0.8 m free around the robot), then turn or walk again, away from the obstacle.
 - The robot walks at about 0.5 m/s: "walk forward for N seconds" means about 0.5*N metres (5 seconds = 2.5 m),
   done as walk_forward steps of <= 1 m.
-- Following a wall: the wall must stay at about the same distance at the robot's side (read it from the LIDAR). Walk in
-  steps of <= 1 m and plan at most 3 steps at a time, then check the LIDAR in the results. The wall has ended when the
-  side distance suddenly jumps by more than 1 m (or becomes '>10'); then stop there. Turn by <= 45 degrees to correct drift.
+- Following a wall: use follow_wall (the wall must be at the robot's LEFT or RIGHT side within 1.8 m; if the wall is straight
+  ahead, walk_to_obstacle and turn 90 degrees first). It keeps the distance, stays parallel and stops when the wall ends,
+  at a corner/obstacle ahead or after the given metres; the result says which. Do not follow a wall with single walk_forward steps.
 - Remember what is already done. The results list every executed action; each part of a multi-part task is done ONCE.
   Never repeat a finished part (for example a turn that was already made) unless its result says it failed.
 - If the task needs something that is not in the catalog (e.g. jumping), do the possible part, say clearly what you
@@ -264,7 +274,9 @@ class Agent:
         self.should_cancel = should_cancel or (lambda: False)
         self.units = {s["name"]: s["parameter"].get("unit", "") for s in catalog if "parameter" in s}
         full_catalog = list(catalog) + [LOOK]
-        self.system = SYSTEM_PROMPT.format(max_actions=max_actions, catalog=json.dumps(full_catalog, ensure_ascii=False))
+        self.system = SYSTEM_PROMPT.format(max_actions=max_actions, catalog=json.dumps(full_catalog, ensure_ascii=False))     # PLNY prompt
+        self._mode_note = []
+        self._task = ""
 
     @staticmethod
     def _pose_text(p):
@@ -332,11 +344,30 @@ class Agent:
         lang = "sk"           # jazyk hlaseni (AI ho potvrdi v poli "language")
         pics = []             # snimky z 'look' z predchadzajuceho planu: (bytes, mime, popis)
         last_look = False
+        mode, groups = prompt_select.select(task)           # PROMPT_PATCH: kratky prompt len pre jasne jednoduche ulohy
+        system = self.system if mode == "full" else prompt_select.build_system(
+            SYSTEM_PROMPT, self.catalog, LOOK, self.max_actions, mode, groups)
+        self._task = task
+        self._mode_note = [mode + (" (" + ",".join(sorted(groups)) + ")" if mode != "full" else "")]
+        known = {s["name"] for s in self.catalog} | {"look"}
+
+        def escalate(why, it):
+            """prejdi na plny prompt (vrati True, ak sa nieco zmenilo)"""
+            nonlocal mode, groups, system
+            if mode == "full":
+                return False
+            mode, groups, system = "full", set(prompt_select.GROUPS), self.system
+            self._mode_note.append("full (%s, prompt %d)" % (why, it))
+            self.log("Prompt: prechod na plny prompt (%s)" % why)
+            return True
+
         if self.run_dir:
             os.makedirs(self.run_dir, exist_ok=True)
         for it in range(1, self.max_iterations + 1):
             if self.should_cancel():
                 return self._result(False, "cancelled", "Uloha bola zrusena.", steps_done, it - 1)
+            if mode != "full" and it >= 3:
+                escalate("uloha trva dlho", it)
             fb("thinking", it)
             images = list(pics)
             if not (pics and last_look):
@@ -353,7 +384,7 @@ class Agent:
                 user += "\n\nNOW: " + self._pose_text(pose) + "; " + lt
             t0 = time.time()
             try:
-                reply = self.llm.ask(self.system, user, images)
+                reply = self.llm.ask(system, user, images)
             except Exception as e:     # siet, kluc, limit...
                 self.log("LLM chyba: %s" % e)
                 ai = getattr(self.llm, "last_info", None)
@@ -375,6 +406,14 @@ class Agent:
                 if failures >= self.max_failures:
                     return self._result(False, "bad_plan", "AI opakovane nevratila platny JSON.", steps_done, it)
                 continue
+            if mode != "full":
+                acts = plan.get("actions")
+                acts = acts if isinstance(acts, list) else []
+                unknown = any(isinstance(a, dict) and (a.get("skill") not in known or a.get("skill") in prompt_select.hidden_skills(groups)) for a in acts)
+                said_no = prompt_select.wants_full(str(plan.get("answer", "")) + " " + str(plan.get("thought", "")))
+                if unknown or said_no or (plan.get("done") is True and not acts):
+                    if escalate("neznamy skill" if unknown else "kratky prompt nestaci", it):
+                        continue          # nic sa nevykonalo, snimky z look ostavaju (pics, last_look)
             pics, last_look = [], False
             pl = str(plan.get("language", "")).lower()[:2]
             if pl in MSG and pl != lang:
@@ -459,6 +498,7 @@ class Agent:
                 else:
                     failures += 1
                     plan_ok = False
+                    escalate("akcia zlyhala", it)
                     fb("fail|%d|%s" % (idx, msg or str(res.get("status"))), it)
                     for j in range(idx + 1, len(actions)):
                         fb("skip|%d" % j, it)
@@ -483,6 +523,10 @@ class Agent:
 
     def _result(self, success, status, summary, steps, iterations):
         r = {"success": success, "status": status, "summary": summary, "steps": steps, "iterations": iterations}
+        if self._task:
+            r["task"] = self._task
+        if self._mode_note:
+            r["prompt_mode"] = " -> ".join(self._mode_note)
         if self.run_dir:
             with open(os.path.join(self.run_dir, "result.json"), "w") as f:
                 json.dump(r, f, ensure_ascii=False, indent=2)

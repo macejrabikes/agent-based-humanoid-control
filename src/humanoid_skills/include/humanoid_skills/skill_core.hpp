@@ -19,7 +19,8 @@
 namespace skills
 {
 
-enum class Kind {Stop, Walk, Turn, Arms, Wait, Gesture, Look, Getup, GoTo, Place, Where, Push, Door, Room};   // SKILLS2_PATCH, NAV_PATCH, OPEN_PATCH
+enum class Kind {Stop, Walk, Turn, Arms, Wait, Gesture, Look, Getup, GoTo, Place, Where, Push, Door, Room,
+  ToObj, Around, Follow};   // SKILLS2_PATCH, NAV_PATCH, OPEN_PATCH, SKILLS3_PATCH
 
 struct SkillSpec
 {
@@ -61,6 +62,13 @@ struct Params
   double door_pre = 1.4, door_exit = 1.2;       // OPEN_PATCH: bod pred dverami a vzdialenost za rovinou steny, kde skill konci [m]
   double door_speed = 0.35;                     // OPEN_PATCH: rychlost pri prechode [m/s]
   double stuck_s = 4.0, stuck_min = 0.15;   // STUCK_PATCH: ak za stuck_s prejde < stuck_min [m], robot stoji o prekazku
+  // SKILLS3_PATCH: walk_to_object, go_around_obstacle, follow_wall
+  double s3_speed = 0.30;          // rychlost pri obchadzani a pri chodzi popri stene [m/s]
+  double s3_side_speed = 0.25;     // bocny posun pri obchadzani [m/s]
+  double around_half_w = 0.6;      // go_around_obstacle: sirka volneho koridora pred robotom (polovica) [m]; robot ma ~0.3 m + rezerva
+  double around_max_lat = 2.2;     // go_around_obstacle: najvacsi bocny posun od povodnej priamky [m]
+  double around_range = 3.0;       // go_around_obstacle: prekazka musi byt bližsie ako toto [m]
+  double wall_find = 1.8;          // follow_wall: stena musi byt na boku bližsie ako toto [m]
 };
 
 // OPEN_PATCH: najblizsia prekazka v kazdom 2-stupnovom vysecku okolo robota (index 0 = -180 st. = za robotom,
@@ -457,6 +465,28 @@ public:
       "('find the red box'): look_around, and if the object is not in the pictures call search_room and look_around again, until the object is found or "
       "search_room fails with status explored (the whole room has been visited). Stops in front of obstacles. Takes 5-20 s. Robot must stand with arms down.";
     add(s);
+    s = {}; s.name = "walk_to_object"; s.kind = K::ToObj; s.has_value = true; s.unit = "%"; s.vmin = 1; s.vmax = 100; s.vdef = 50;
+    s.description = "Goes to an object you SEE in the camera picture in ONE action: turns so that the object is straight ahead (like turn_towards) and "
+      "then walks straight to it until the LiDAR measures it 0.7 m in front of the robot. 'value' = the horizontal position of the object in the picture "
+      "in PERCENT, read on the ruler at the bottom of the picture (1 = left edge, 50 = centre, 100 = right edge). Use it instead of turn_towards followed by "
+      "walk_to_obstacle. Plan nothing after it except look (and push_forward if you must push the object): check in the next picture that the object is straight ahead. "
+      "Fails with no_object if the LiDAR sees nothing straight ahead after the turn (the object may be too low or too far: look at the picture) and with blocked "
+      "if the robot gets stuck. Takes 5-25 s. Robot must stand with arms down.";
+    add(s);
+    s = {}; s.name = "go_around_obstacle"; s.kind = K::Around; s.has_value = true; s.unit = "m"; s.vmin = 0.5; s.vmax = 5.0; s.vdef = 2.0;
+    s.description = "Walks AROUND an obstacle that stands in the way straight ahead (box, pillar, chair...; the LiDAR must see it within 3 m): it steps sideways to the "
+      "side with more room until the way ahead is free, walks past the obstacle and steps back onto the original line, so it ends beyond the obstacle facing the "
+      "original direction. 'value' = the minimum distance in metres to be walked forward from the starting point (default 2; make it bigger than the distance to the "
+      "obstacle plus its depth). Fails with no_obstacle if nothing is ahead (use walk_forward), with no_room if both sides are blocked or the obstacle is too wide "
+      "(a long wall: use go_through_opening or turn away) and with blocked if the robot gets stuck. Afterwards look at the picture and continue. "
+      "Takes 10-30 s. Robot must stand with arms down.";
+    add(s);
+    s = {}; s.name = "follow_wall"; s.kind = K::Follow; s.has_value = true; s.unit = "m"; s.vmin = 0.5; s.vmax = 15.0; s.vdef = 4.0;
+    s.description = "Walks ALONG a wall that is at the robot's SIDE (left or right, within 1.8 m, found by the LiDAR): it keeps its distance and stays parallel to the wall "
+      "and stops when the wall ends (an opening or the end of the wall), when a corner or an obstacle appears ahead, or after 'value' metres (default 4). "
+      "Use it for 'walk along the wall to its end'. The result says why it stopped and gives the LiDAR distances. Fails with no_wall if there is no straight wall at "
+      "the side (first walk_to_obstacle and turn 90 degrees so that the wall is at the side) and with blocked if the robot gets stuck. Robot must stand with arms down.";
+    add(s);
     s = {}; s.name = "wait"; s.kind = K::Wait; s.has_value = true; s.unit = "s";
     s.vmin = 0.1; s.vmax = 30; s.vdef = 1.0; s.description = "Pocka dany pocet sekund."; add(s);
     for (auto & k : specs_) {
@@ -536,6 +566,39 @@ public:
       return fail(res, "no_hands", "Gesto '" + name + "' potrebuje robota s prstami (simulacia musi bezat s with_hands:=true). "
         "The robot has no hands with fingers: this gesture is not possible, use another skill (e.g. wave).");
     }
+    if (spec->kind == Kind::ToObj || spec->kind == Kind::Around || spec->kind == Kind::Follow) {     // SKILLS3_PATCH
+      if (!s.have_odom) {return fail(res, "no_odom", "Nemam data z odometrie (/chappie/odom), neviem urcit polohu.");}
+      if (!s.have_lidar) {return fail(res, "no_lidar", "Nemam cerstve data z lidaru (/lidar/points), neviem hladat prekazku.");}
+      if (arms_up_) {return fail(res, "arms_up", "Ruky su hore a lidar by videl ich - najprv arms_down.");}
+      if (spec->kind == Kind::Around) {
+        const double d0 = corridor_(s.bins, p_.around_half_w, 0.0);
+        if (d0 > p_.around_range) {
+          return fail(res, "no_obstacle", "go_around_obstacle: the LiDAR sees no obstacle within " + fx(p_.around_range, 0) +
+            " m straight ahead (front " + fmt_dist(s.lid_front) + " m). Nothing to go around: use walk_forward, or walk_to_object / turn_towards if the target is elsewhere.");
+        }
+        double eL = 0.0, eR = 0.0;
+        obstacle_extent_(s.bins, d0, eL, eR);
+        const double cl = eL + (s.lid_left < 0.8 ? 5.0 : 0.0), cr = eR + (s.lid_right < 0.8 ? 5.0 : 0.0);
+        a3_side_ = (cl <= cr) ? 1 : -1;
+        a3_d0_ = d0;
+        const double best = std::min(cl, cr);
+        if (best + p_.around_half_w > p_.around_max_lat) {
+          return fail(res, "no_room", "go_around_obstacle: no room to go around - the obstacle is about " + fx(eL + eR, 1) +
+            " m wide or a wall is at the sides (LIDAR: front " + fmt_dist(s.lid_front) + ", left " + fmt_dist(s.lid_left) + ", right " + fmt_dist(s.lid_right) +
+            " m). Use go_through_opening to find a way, or turn away.");
+        }
+      }
+      if (spec->kind == Kind::Follow) {
+        const double dl = s.lid_left, dr = s.lid_right;
+        a3_side_ = (dl <= dr) ? 1 : -1;
+        const WallFit wf = fit_wall_(s.bins, a3_side_);
+        if (std::min(dl, dr) > p_.wall_find || !wf.ok) {
+          return fail(res, "no_wall", "follow_wall: no straight wall at the robot's side (LIDAR: left " + fmt_dist(dl) + ", right " + fmt_dist(dr) +
+            " m). The wall must be at the LEFT or RIGHT within " + fx(p_.wall_find, 1) + " m: first walk_to_obstacle and turn 90 degrees so the wall is at the side.");
+        }
+        a3_wall_d_ = clampd(wf.d, 0.6, 1.0);
+      }
+    }
     if (spec->kind == Kind::Place || spec->kind == Kind::Where || spec->kind == Kind::GoTo || spec->kind == Kind::Push ||
       spec->kind == Kind::Door || spec->kind == Kind::Room) {
       if (!s.have_odom) {
@@ -611,6 +674,15 @@ public:
     door_relocating_ = false; door_reloc_n_ = 0; door_move_t_ = door_look_t_ = 0.0;
     door_vis_.clear(); door_vis_.push_back({s.ox, s.oy});
     room_t_ = 0.0; room_moving_ = false; room_move_t_ = 0.0; lost_t_ = 0.0;
+    a3_ph_ = 0; a3_seen_ = a3_passed_ = a3_stopping_ = false;      // SKILLS3_PATCH
+    a3_gone_t_ = a3_lost_t_ = a3_clear_t_ = a3_fwd_pass_ = a3_lat_tgt_ = a3_fwd_seen_ = 0.0;
+    a3_oyaw0_ = s.oyaw;
+    a3_end_msg_.clear();
+    if (spec->kind == Kind::ToObj) {
+      const double hf = p_.camera_hfov_deg * M_PI / 180.0;
+      a3_turn_deg_ = std::atan((v - 50.0) / 50.0 * std::tan(hf / 2.0)) * 180.0 / M_PI;      // + = predmet je vpravo
+      a3_tyaw_ = wrap_pi(s.yaw - a3_turn_deg_ * M_PI / 180.0);
+    }
     if (spec->kind == Kind::GoTo) {
       const Place & pl = places_[static_cast<int>(std::lround(v))];
       tx_ = pl.x; ty_ = pl.y; tyaw_ = pl.yaw;
@@ -746,6 +818,15 @@ public:
       case Kind::Room:
         room_(o, s, dt);
         break;
+      case Kind::ToObj:
+        toobj_(o, s, dt);
+        break;
+      case Kind::Around:
+        around_(o, s, dt);
+        break;
+      case Kind::Follow:
+        follow_(o, s, dt);
+        break;
     }
     if (!o.finished && cur_.kind != Kind::Stop && t_ > timeout_()) {
       std::string tmsg = "Skill " + cur_.name + " trval prilis dlho.";
@@ -786,6 +867,9 @@ private:
       case Kind::Push: return gest_total_ * 3.0 + 15.0;
       case Kind::Door: return 150.0;
       case Kind::Room: return 60.0;
+      case Kind::ToObj: return 60.0;
+      case Kind::Around: return 100.0;
+      case Kind::Follow: return 2.0 * value_ / p_.s3_speed + 15.0;
       default: return 1e9;
     }
   }
@@ -797,7 +881,8 @@ private:
       return odom_used_ && s.have_odom ? std::hypot(s.ox - x0_, s.oy - y0_) : d_est_;
     }
     if (cur_.kind == Kind::Turn) {return std::fabs(turned_) * 180.0 / M_PI;}
-    if (cur_.kind == Kind::GoTo || cur_.kind == Kind::Push || cur_.kind == Kind::Door || cur_.kind == Kind::Room) {
+    if (cur_.kind == Kind::GoTo || cur_.kind == Kind::Push || cur_.kind == Kind::Door || cur_.kind == Kind::Room ||
+      cur_.kind == Kind::ToObj || cur_.kind == Kind::Around || cur_.kind == Kind::Follow) {
       return s.have_odom ? std::hypot(s.ox - x0_, s.oy - y0_) : 0.0;
     }
     return 0.0;
@@ -1640,6 +1725,340 @@ private:
     o.vy = vy_cur_;
     o.wz = w_cur_;
   }
+
+  // ======================================================================================================
+  // SKILLS3_PATCH: walk_to_object, go_around_obstacle, follow_wall
+  // ======================================================================================================
+
+  // najblizsi bod LiDARu v koridore rovno pred robotom (|y| < half_w, x > x_min) [m]; 99 = nic
+  static double corridor_(const LidarBins & b, double half_w, double x_min)
+  {
+    double m = 99.0;
+    for (int k = 0; k < kBins; ++k) {
+      if (b.r[k] < 90.0 && b.x[k] > x_min && std::fabs(b.y[k]) < half_w) {m = std::min(m, b.x[k]);}
+    }
+    return m;
+  }
+
+  // bocne okraje prekazky pred robotom: od stredu ide po susednych vysecoch, kym su body blizko pri sebe (dolava eL, doprava eR, v m od osi robota)
+  static void obstacle_extent_(const LidarBins & b, double d0, double & eL, double & eR)
+  {
+    int kc = -1;
+    double best = 99.0;
+    for (int k = 0; k < kBins; ++k) {
+      if (b.r[k] < 90.0 && b.x[k] > 0.0 && std::fabs(b.y[k]) < 0.6 && b.x[k] < best) {best = b.x[k]; kc = k;}
+    }
+    eL = eR = 0.0;
+    if (kc < 0) {return;}
+    for (int dir = -1; dir <= 1; dir += 2) {
+      double last = b.y[kc];
+      for (int k = kc + dir; k >= 0 && k < kBins; k += dir) {
+        if (b.r[k] > 90.0 || b.x[k] > d0 + 1.0 || b.x[k] < 0.0) {break;}
+        if (std::fabs(b.y[k] - last) > 0.5) {break;}
+        last = b.y[k];
+      }
+      if (dir > 0) {eL = std::max(0.0, last);} else {eR = std::max(0.0, -last);}
+    }
+  }
+
+  // priamka steny na boku robota (side +1 = vlavo, -1 = vpravo) z LiDAR vysecov
+  struct WallFit
+  {
+    bool ok = false;
+    double phi = 0;     // smer steny voci smeru robota [rad], + = stena sa dalej odklana dolava
+    double d = 0;       // kolma vzdialenost k stene [m]
+    double span = 0;    // dlzka useku steny, ktory je vidiet [m]
+    int n = 0, n_fwd = 0;   // pocet bodov steny / z toho pred a vedla robota
+  };
+
+  static WallFit fit_wall_(const LidarBins & b, int side)
+  {
+    WallFit f;
+    double dmin = 99.0;
+    auto ang_of = [&](int k) {return side * std::atan2(b.y[k], b.x[k]) * 180.0 / M_PI;};      // + = smer k stene
+    for (int k = 0; k < kBins; ++k) {
+      if (b.r[k] > 2.2) {continue;}
+      const double a = ang_of(k);
+      if (a >= 35.0 && a <= 145.0) {dmin = std::min(dmin, b.r[k]);}
+    }
+    if (dmin > 90.0) {return f;}
+    std::vector<int> idx;
+    double mx = 0, my = 0;
+    for (int k = 0; k < kBins; ++k) {
+      if (b.r[k] > 2.2) {continue;}
+      const double a = ang_of(k);
+      if (a >= 35.0 && a <= 145.0 && b.r[k] <= dmin + 0.9) {idx.push_back(k); mx += b.x[k]; my += b.y[k];}
+    }
+    f.n = static_cast<int>(idx.size());
+    if (f.n < 5) {return f;}
+    mx /= f.n; my /= f.n;
+    double sxx = 0, syy = 0, sxy = 0;
+    for (int k : idx) {
+      sxx += (b.x[k] - mx) * (b.x[k] - mx); syy += (b.y[k] - my) * (b.y[k] - my); sxy += (b.x[k] - mx) * (b.y[k] - my);
+    }
+    const double th = 0.5 * std::atan2(2.0 * sxy, sxx - syy), cs = std::cos(th), sn = std::sin(th);
+    double pmin = 1e9, pmax = -1e9;
+    for (int k : idx) {
+      const double pr = (b.x[k] - mx) * cs + (b.y[k] - my) * sn;
+      pmin = std::min(pmin, pr); pmax = std::max(pmax, pr);
+    }
+    f.span = pmax - pmin;
+    f.phi = th;
+    f.d = std::fabs(-sn * mx + cs * my);
+    f.ok = f.span >= 0.5;
+    for (int k = 0; k < kBins; ++k) {
+      if (b.r[k] > 3.0) {continue;}
+      const double a = ang_of(k);
+      if (a < 15.0 || a > 100.0) {continue;}
+      if (std::fabs(-sn * (b.x[k] - mx) + cs * (b.y[k] - my)) < 0.35) {++f.n_fwd;}
+    }
+    return f;
+  }
+
+  // zasekavanie: vrati true, ak sa robot za stuck_s s prejde menej nez stuck_min (d = prejdena draha)
+  bool s3_stuck_(double d, double dt)
+  {
+    if (v_cur_ > 0.2 || std::fabs(vy_cur_) > 0.15) {
+      stuck_t_ += dt;
+      if (stuck_t_ >= p_.stuck_s) {
+        if (std::fabs(d - stuck_d0_) < p_.stuck_min) {return true;}
+        stuck_t_ = 0.0; stuck_d0_ = d;
+      }
+    } else {
+      stuck_t_ = 0.0; stuck_d0_ = d;
+    }
+    return false;
+  }
+
+  std::string s3_lidar_(const Sensors & s) const
+  {
+    return "LIDAR now: front " + fmt_dist(s.lid_front) + ", left " + fmt_dist(s.lid_left) + ", right " + fmt_dist(s.lid_right) + " m.";
+  }
+
+  // ---- walk_to_object: otoc sa na predmet z obrazu, dojdi k nemu podla LiDARu
+  void toobj_(Output & o, const Sensors & s, double dt)
+  {
+    const double fwd = std::hypot(s.ox - x0_, s.oy - y0_);
+    const double herr = wrap_pi(a3_tyaw_ - s.yaw);
+    double vt = 0.0, wt = 0.0;
+    o.progress = clampd(a3_ph_ == 0 ? 0.2 : 0.3 + 0.7 * fwd / std::max(a3_d0_, 0.5), 0.0, 0.95);
+    if (a3_ph_ == 0) {                                   // 1) otoc sa tak, aby bol predmet priamo pred robotom
+      o.state = "turning_to_object";
+      if (std::fabs(herr) < 0.06) {
+        settle_t_ += dt;
+        if (settle_t_ >= p_.settle_s) {
+          const double d = corridor_(s.bins, 0.45, 0.0);
+          if (!s.have_lidar || d > 8.0) {
+            finish_(o, false, "no_object", "walk_to_object: after turning " + fx(std::fabs(a3_turn_deg_), 0) + " deg " + (a3_turn_deg_ > 0 ? "right" : "left") +
+              " the LiDAR sees nothing straight ahead within 8 m (front " + fmt_dist(s.lid_front) + " m). The object may be too low or too far for the LiDAR, "
+              "or the percent was wrong: look at the picture, then use turn_towards + walk_forward in steps.", s);
+            return;
+          }
+          a3_d_ = a3_d0_ = d; a3_fwd_seen_ = fwd; a3_ph_ = 1; stuck_t_ = 0.0; stuck_d0_ = fwd; settle_t_ = 0.0; corrections_ = 0;
+        }
+      } else {
+        settle_t_ = 0.0;
+        wt = clampd(1.2 * herr, -p_.turn_rate, p_.turn_rate);
+      }
+    } else if (a3_ph_ == 1) {                            // 2) chod rovno k predmetu
+      o.state = "walking_to_object";
+      if (!s.have_lidar || arms_up_) {finish_(o, false, "no_lidar", "Stratil som data z lidaru, zastavujem.", s); return;}
+      const double d = corridor_(s.bins, 0.45, 0.0);
+      if (d < 90.0) {a3_d_ = d; a3_fwd_seen_ = fwd; a3_lost_t_ = 0.0;} else {a3_lost_t_ += dt;}
+      if (a3_lost_t_ > 1.0 || fwd > 8.0) {
+        finish_(o, false, "no_object", "walk_to_object: lost the object on the LiDAR after " + fx(fwd, 1) + " m. Look at the picture and replan.", s);
+        return;
+      }
+      double rem = a3_d_ - (fwd - a3_fwd_seen_) - p_.stop_dist;
+      if (s.lid_front < p_.block_dist) {rem = 0.0;}
+      if (rem <= std::max(0.02, v_cur_ * p_.lag)) {
+        a3_ph_ = 2; settle_t_ = 0.0;
+      } else {
+        vt = std::min(p_.walk_speed, std::sqrt(2.0 * p_.decel * std::max(rem, 0.0)) + 0.1);
+        wt = clampd(p_.heading_kp * herr, -p_.heading_max, p_.heading_max);
+        if (s3_stuck_(fwd, dt)) {
+          finish_(o, false, "blocked", "walk_to_object: the robot does not move (something blocks the way), " + fmt_dist(a3_d_) + " m from the object. " + s3_lidar_(s), s);
+          return;
+        }
+      }
+    }
+    if (a3_ph_ == 2) {                                   // 3) dobeh a kontrola
+      o.state = "settling";
+      settle_t_ += dt;
+      if (settle_t_ >= p_.settle_s && v_cur_ < 0.05) {
+        const double d = corridor_(s.bins, 0.45, 0.0);
+        if (d < 90.0 && d - p_.stop_dist > 0.12 && corrections_ < 2 && s.lid_front > p_.block_dist) {
+          ++corrections_; a3_ph_ = 1; a3_d_ = d; a3_fwd_seen_ = fwd; stuck_t_ = 0.0; stuck_d0_ = fwd;
+        } else {
+          std::ostringstream m;
+          m << "walk_to_object: turned " << fx(std::fabs(a3_turn_deg_), 0) << " deg " << (a3_turn_deg_ > 0 ? "right" : "left") << " and walked " << fx(fwd, 2)
+            << " m; the object is now " << fmt_dist(d < 90.0 ? d : s.lid_front) << " m in front of the robot (LiDAR). " << s3_lidar_(s)
+            << " Check the picture: the object must be straight ahead (the nearest thing ahead may be another object).";
+          finish_(o, true, "ok", m.str(), s);
+          return;
+        }
+      }
+    }
+    v_cur_ += clampd(vt - v_cur_, -p_.decel * dt, p_.accel * dt);
+    w_cur_ += clampd(wt - w_cur_, -p_.accel * dt, p_.accel * dt);
+    o.vx = v_cur_;
+    o.wz = w_cur_;
+  }
+
+  // ---- go_around_obstacle: bokom von, popri prekazke, spat na priamku
+  void around_(Output & o, const Sensors & s, double dt)
+  {
+    if (!s.have_lidar || arms_up_) {finish_(o, false, "no_lidar", "Stratil som data z lidaru, zastavujem.", s); return;}
+    const double dx = s.ox - x0_, dy = s.oy - y0_, c = std::cos(a3_oyaw0_), sn = std::sin(a3_oyaw0_);
+    const double fwd = c * dx + sn * dy, lat = -sn * dx + c * dy;      // poloha voci startu skillu: dopredu / dolava
+    double vt = 0.0, vyt = 0.0;
+    double wt = clampd(p_.heading_kp * wrap_pi(yaw0_ - s.yaw), -p_.heading_max, p_.heading_max);
+    const std::string side_s = (a3_side_ > 0) ? "left" : "right";
+    if (a3_ph_ == 0) {                                   // 1) bokom, kym nie je volna cesta dopredu
+      o.state = "stepping_aside";
+      o.progress = 0.15;
+      const double ahead = corridor_(s.bins, p_.around_half_w, 0.0);
+      const double side_d = (a3_side_ > 0) ? s.lid_left : s.lid_right;
+      a3_clear_t_ = (ahead > a3_d0_ + 1.0) ? a3_clear_t_ + dt : 0.0;
+      if (a3_clear_t_ >= 0.4) {
+        a3_ph_ = 1; a3_lat_tgt_ = lat; stuck_t_ = 0.0; stuck_d0_ = fwd; a3_fwd_seen_ = fwd;
+      } else if (std::fabs(lat) > p_.around_max_lat || side_d < 0.5) {
+        finish_(o, false, "no_room", "go_around_obstacle: no room - stepped " + fx(std::fabs(lat), 1) + " m to the " + side_s + " and the way ahead is still blocked or the side is closed (" +
+          side_s + " " + fmt_dist(side_d) + " m). " + s3_lidar_(s) + " Use go_through_opening to find a way or turn away.", s);
+        return;
+      } else {
+        vyt = a3_side_ * p_.s3_side_speed;
+        if (s3_stuck_(std::fabs(lat), dt)) {
+          finish_(o, false, "blocked", "go_around_obstacle: the robot does not move sideways (something blocks it). " + s3_lidar_(s), s);
+          return;
+        }
+      }
+    }
+    if (a3_ph_ == 1) {                                   // 2) popri prekazke dopredu
+      o.state = "passing_obstacle";
+      o.progress = clampd(0.3 + 0.4 * fwd / std::max(value_, 0.5), 0.3, 0.7);
+      const double ahead = corridor_(s.bins, 0.5, 0.0);
+      if (ahead < 0.8) {
+        finish_(o, false, "blocked", "go_around_obstacle: another obstacle " + fmt_dist(ahead) + " m ahead while passing. " + s3_lidar_(s) +
+          " Look at the picture and replan (now " + fx(std::fabs(lat), 1) + " m to the " + side_s + " of the original line).", s);
+        return;
+      }
+      int n = 0;      // body prekazky na druhej strane nez sa uhlo, vedla robota
+      for (int k = 0; k < kBins; ++k) {
+        if (s.bins.r[k] > 90.0) {continue;}
+        const double ly = -a3_side_ * s.bins.y[k];
+        if (s.bins.x[k] > -0.7 && s.bins.x[k] < 0.9 && ly > 0.2 && ly < 1.4) {++n;}
+      }
+      if (n >= 2) {a3_seen_ = true; a3_gone_t_ = 0.0;} else if (a3_seen_) {a3_gone_t_ += dt;}
+      if (!a3_passed_) {
+        if (a3_seen_ && a3_gone_t_ >= 0.3) {a3_passed_ = true; a3_fwd_pass_ = fwd;}
+        else if (!a3_seen_ && fwd > a3_d0_ + 1.2) {a3_passed_ = true; a3_fwd_pass_ = fwd - 0.4;}
+        else if (fwd > std::max(value_, a3_d0_ + 1.2) + 3.0) {a3_passed_ = true; a3_fwd_pass_ = fwd - 0.4;}
+      }
+      if (a3_passed_ && fwd >= std::max(value_, a3_fwd_pass_ + 0.4)) {
+        a3_ph_ = 2; stuck_t_ = 0.0; stuck_d0_ = std::fabs(lat); settle_t_ = 0.0;
+      } else {
+        vt = p_.s3_speed;
+        vyt = clampd(1.2 * (a3_lat_tgt_ - lat), -0.15, 0.15);
+        if (s3_stuck_(fwd, dt)) {
+          finish_(o, false, "blocked", "go_around_obstacle: the robot does not move forward (something blocks it). " + s3_lidar_(s), s);
+          return;
+        }
+      }
+    }
+    if (a3_ph_ == 2) {                                   // 3) spat na povodnu priamku
+      o.state = "stepping_back";
+      o.progress = 0.85;
+      const double toward = (lat > 0) ? s.lid_right : s.lid_left;
+      if (std::fabs(lat) < 0.08 || toward < 0.45) {
+        settle_t_ += dt;
+        if (settle_t_ >= p_.settle_s && std::fabs(vy_cur_) < 0.05) {
+          std::ostringstream m;
+          m << "go_around_obstacle: went around the obstacle on the " << side_s << ". The robot is " << fx(fwd, 1) << " m ahead of where it started, "
+            << (std::fabs(lat) < 0.15 ? "back on the original line" : fx(std::fabs(lat), 1) + " m " + (lat > 0 ? "left" : "right") + " of the original line")
+            << " and faces the original direction. " << s3_lidar_(s) << " Look at the picture and continue.";
+          finish_(o, true, "ok", m.str(), s);
+          return;
+        }
+      } else {
+        settle_t_ = 0.0;
+        vyt = clampd(-1.2 * lat, -p_.s3_side_speed, p_.s3_side_speed);
+        if (std::fabs(vyt) < 0.1) {vyt = (vyt < 0 ? -0.1 : 0.1);}
+        if (s3_stuck_(std::fabs(lat), dt)) {
+          finish_(o, true, "ok", "go_around_obstacle: passed the obstacle on the " + side_s + " but could not step back onto the original line (something at the side); the robot is " +
+            fx(std::fabs(lat), 1) + " m to the " + side_s + " of it, " + fx(fwd, 1) + " m ahead of the start. " + s3_lidar_(s), s);
+          return;
+        }
+      }
+    }
+    v_cur_ += clampd(vt - v_cur_, -p_.decel * dt, p_.accel * dt);
+    w_cur_ = wt;
+    vy_cur_ += clampd(vyt - vy_cur_, -p_.accel * dt, p_.accel * dt);
+    o.vx = v_cur_;
+    o.vy = vy_cur_;
+    o.wz = w_cur_;
+  }
+
+  // ---- follow_wall: popri stene po boku robota, kym neskonci
+  void follow_(Output & o, const Sensors & s, double dt)
+  {
+    if (!s.have_lidar || arms_up_) {finish_(o, false, "no_lidar", "Stratil som data z lidaru, zastavujem.", s); return;}
+    const double fwd = std::hypot(s.ox - x0_, s.oy - y0_);
+    const WallFit f = fit_wall_(s.bins, a3_side_);
+    const std::string side_s = (a3_side_ > 0) ? "left" : "right";
+    o.state = "following_wall";
+    o.progress = clampd(fwd / value_, 0.0, 0.99);
+    double vt = p_.s3_speed, vyt = 0.0;
+    double wt = clampd(p_.heading_kp * wrap_pi(yaw0_ - s.yaw), -p_.heading_max, p_.heading_max);
+    if (f.ok) {
+      wt = clampd(1.0 * f.phi, -0.25, 0.25);
+      vyt = a3_side_ * clampd(0.8 * (f.d - a3_wall_d_), -0.15, 0.15);
+    }
+    if (!a3_stopping_) {
+      const double front = corridor_(s.bins, 0.45, 0.0);
+      a3_gone_t_ = (f.ok && f.n_fwd < 3) ? a3_gone_t_ + dt : 0.0;
+      a3_lost_t_ = f.ok ? 0.0 : a3_lost_t_ + dt;
+      if (front < p_.stop_dist + 0.1) {
+        a3_stopping_ = true;
+        a3_end_msg_ = "stopped because a corner or an obstacle is " + fmt_dist(front) + " m ahead (the wall probably turns here)";
+      } else if (fwd > 0.3 && (a3_gone_t_ >= 0.6 || a3_lost_t_ >= 1.0)) {
+        a3_stopping_ = true;
+        a3_end_msg_ = "the wall ended (nothing more of it ahead on the " + side_s + ")";
+      } else if (fwd >= value_) {
+        a3_stopping_ = true;
+        a3_end_msg_ = "walked the requested " + fx(value_, 1) + " m; the wall continues";
+      } else if (s3_stuck_(fwd, dt)) {
+        finish_(o, false, "blocked", "follow_wall: the robot does not move (something blocks the way) after " + fx(fwd, 1) + " m. Wall on the " + side_s + ": " +
+          (f.ok ? "distance " + fx(f.d, 2) + " m, angle " + fx(f.phi * 180.0 / M_PI, 0) + " deg, " + std::to_string(f.n_fwd) + " wall points ahead" : "no straight wall in view") +
+          ". " + s3_lidar_(s) + " Now at " + pos_text_(s.ox, s.oy, s.oyaw) + ".", s);
+        return;
+      }
+    }
+    if (a3_stopping_) {
+      vt = 0.0; vyt = 0.0;
+      settle_t_ += dt;
+      if (settle_t_ >= p_.settle_s && v_cur_ < 0.03) {
+        std::ostringstream m;
+        m << "follow_wall: followed the wall on the " << side_s << " for " << fx(fwd, 1) << " m, " << a3_end_msg_ << ". " << s3_lidar_(s) << " Now at "
+          << pos_text_(s.ox, s.oy, s.oyaw) << ". Look at the picture and continue.";
+        finish_(o, true, "ok", m.str(), s);
+        return;
+      }
+    }
+    v_cur_ += clampd(vt - v_cur_, -p_.decel * dt, p_.accel * dt);
+    w_cur_ += clampd(wt - w_cur_, -p_.accel * dt, p_.accel * dt);
+    vy_cur_ += clampd(vyt - vy_cur_, -p_.accel * dt, p_.accel * dt);
+    o.vx = v_cur_;
+    o.vy = vy_cur_;
+    o.wz = w_cur_;
+  }
+
+  // SKILLS3_PATCH: stav
+  int a3_ph_ = 0, a3_side_ = 1;
+  bool a3_seen_ = false, a3_passed_ = false, a3_stopping_ = false;
+  double a3_tyaw_ = 0, a3_turn_deg_ = 0, a3_d_ = 0, a3_d0_ = 0, a3_fwd_seen_ = 0, a3_gone_t_ = 0, a3_lost_t_ = 0, a3_clear_t_ = 0;
+  double a3_fwd_pass_ = 0, a3_lat_tgt_ = 0, a3_oyaw0_ = 0, a3_wall_d_ = 0.7;
+  std::string a3_end_msg_;
 
   Params p_;
   std::vector<SkillSpec> specs_;
