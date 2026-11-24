@@ -129,7 +129,7 @@ class AgentNode(Node):
         super().__init__("agent_node")
         self.provider = self.declare_parameter("provider", "gemini").value
         self.model = self.declare_parameter("model", "").value
-        self.max_iterations = int(self.declare_parameter("max_iterations", 10).value)
+        self.max_iterations = int(__import__("os").environ.get("CHAPPIE_MAX_ITER") or self.declare_parameter("max_iterations", 15).value)     # LIMITS_PATCH: 15 (primitiva potrebuju viac krokov), CHAPPIE_MAX_ITER prebije
         self.max_actions = int(self.declare_parameter("max_actions", 20).value)
         self.max_distance = float(self.declare_parameter("max_total_distance", 40.0).value)
         self.runs_dir = self.declare_parameter("runs_dir", os.path.expanduser("~/chappie_runs")).value

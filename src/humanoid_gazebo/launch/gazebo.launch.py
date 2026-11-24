@@ -49,6 +49,8 @@ def generate_launch_description():
         DeclareLaunchArgument('weld_upper', default_value='false'),
         DeclareLaunchArgument('world', default_value='arena.sdf'),
         DeclareLaunchArgument('spawn_z', default_value='0.80'),
+        DeclareLaunchArgument('headless', default_value='false',
+                              description='true = Gazebo bez okna (gz sim -s), senzory sa renderuju dalej'),
 
         AppendEnvironmentVariable('GZ_SIM_RESOURCE_PATH',
                                   os.path.dirname(desc_share)),
@@ -57,7 +59,8 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(
                 os.path.join(ros_gz_sim, 'launch', 'gz_sim.launch.py')),
             launch_arguments={
-                'gz_args': ['-r --render-engine ogre ', gz_share + '/worlds/', LaunchConfiguration('world')]}.items()),
+                'gz_args': ['-r ', PythonExpression(["'-s ' if '", LaunchConfiguration('headless'), "' == 'true' else ''"]),
+                            '--render-engine ogre ', gz_share + '/worlds/', LaunchConfiguration('world')]}.items()),
 
         Node(
             package='robot_state_publisher',

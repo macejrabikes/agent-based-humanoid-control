@@ -25,7 +25,7 @@
   <gazebo reference="d435_link">
     <sensor name="rgb_camera" type="camera">
       <always_on>true</always_on>
-      <update_rate>10</update_rate>
+      <update_rate>1</update_rate>
       <topic>camera/image</topic>
       <gz_frame_id>d435_link</gz_frame_id>
       <camera>

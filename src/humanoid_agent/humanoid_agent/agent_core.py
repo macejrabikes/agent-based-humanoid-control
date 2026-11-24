@@ -20,9 +20,25 @@ try:
 except ImportError:          # spustene samostatne (nie ako balik)
     import prompt_select
 
+try:
+    from . import primitives
+except ImportError:          # spustene samostatne (nie ako balik)
+    import primitives        # PRIMITIVES_PATCH: robot ma len jednoduche primitiva, premysla AI
+
 LOOK = {"name": "look",
         "description": "Take a camera picture WITHOUT moving. Every picture taken during your plan is shown to you "
                        "together at the next step. Use it between movements when you need to see something."}
+try:
+    from . import perception
+except ImportError:          # spustene samostatne (nie ako balik)
+    import perception
+
+# FIND_PATCH: pseudo-skill (vykonava sa v Pythone, kamera + detektor farieb + otacanie), v katalogu pre AI
+FIND = {"name": "find_object",
+        "description": "Finds an object of a given COLOUR with a colour detector and turns the robot until it is straight ahead. "
+                       "Give the colour in the field 'arg' (red, orange, yellow, green, cyan, blue, purple or pink); 'value' = how many "
+                       "degrees the robot may turn while searching (default 360). Fails with not_found if no object of that colour is seen.",
+        "parameter": {"name": "value", "unit": "deg", "min": 45, "max": 360, "default": 360}}
 MOVE_SKILLS = ("walk_forward", "walk_backward", "step_left", "step_right", "walk_to_obstacle")   # LIDAR_PATCH
 
 SYSTEM_PROMPT = """You are the high-level controller of a simulated humanoid robot named Chappie (Unitree G1).
@@ -92,6 +108,13 @@ GOING TO AN OBJECT YOU SEE (box, pillar, person...):
 - If the object is NOT in the picture, search: turn_left 60, look, turn_left 60, look, ... (the view is 80 degrees wide, so
   60 degree steps overlap), until you see it. Do not walk anywhere before you have seen the object.
 - Distances: after turn_towards the LIDAR "front" distance is the distance to the object straight ahead.
+- find_object finds an object of a given COLOUR with a colour detector and turns the robot until it is straight ahead:
+  {{"skill": "find_object", "arg": "blue", "value": 360}} (arg = red, orange, yellow, green, cyan, blue, purple or pink; value = how many
+  degrees it may turn while searching, default 360). Use it whenever the task names the colour of an object, whether you see it in the
+  picture or not: it is more exact than reading the ruler and replaces searching with turns. On success plan walk_to_object 50 right
+  after it in the SAME reply (the object is then straight ahead), then look. If it fails with not_found, no object of that colour is
+  visible from here: say so (or search_room and try again). Orange-red objects are found as red AND orange, pink and purple overlap.
+  It does not know WHICH object it is (a colour may belong to several objects): check the picture afterwards.
 - walk_to_object does both in ONE action: give it the ruler percent of the object and it turns, walks straight to the object and
   stops 0.7 m in front of it (LiDAR). Prefer it to turn_towards + walk_to_obstacle. Plan only "look" (or push_forward) after it.
 - go_around_obstacle: if an obstacle (box, pillar...) stands in the way straight ahead, use it instead of steering around by hand:
@@ -225,6 +248,7 @@ def validate_actions(actions, catalog, max_actions, lang="sk"):
     m = MSG.get(lang, MSG["sk"])
     specs = {s["name"]: s for s in catalog}
     specs["look"] = LOOK
+    specs["find_object"] = FIND
     ok, errors = [], []
     if not isinstance(actions, list):
         return [], [m["list"]]
@@ -252,8 +276,53 @@ def validate_actions(actions, catalog, max_actions, lang="sk"):
             if not (p["min"] <= value <= p["max"]):
                 errors.append(m["limits"] % (i + 1, name, value, p["unit"], p["min"], p["max"]))
                 continue
-        ok.append({"skill": name, "value": value})
+        if primitives.ENABLED and not primitives.is_primitive(name):     # PRIMITIVES_PATCH
+            errors.append("action %d: '%s' is not available: the robot has only simple primitives (%s). Plan the task yourself with them" % (i + 1, name, primitives.names_text()))
+            continue
+        entry = {"skill": name, "value": value}
+        if name == "find_object":
+            col = perception.normalize_color(a.get("arg", a.get("color", "")))
+            if not col:
+                errors.append("action %d: find_object needs 'arg' = a colour (red, orange, yellow, green, cyan, blue, purple, pink)" % (i + 1))
+                continue
+            entry["arg"] = col
+        ok.append(entry)
     return ok, errors
+
+
+# HISTORY_PATCH: stare riadky historie sa skratia (ciste pravidla, bez AI)
+KEEP_LONG = ("save_place", "go_to_place", "where_am_i", "look_around", "go_through_opening", "search_room", "find_object",
+             "get_up", "follow_wall", "go_around_obstacle", "walk_to_object")
+
+
+def compact_history(history, keep=8, limit=40):
+    """poslednych `keep` riadkov cele, starsie skratene; vrati zoznam riadkov pre prompt"""
+    h = list(history[-limit:])
+    if os.environ.get("CHAPPIE_HISTORY", "auto").lower() == "full" or len(h) <= keep:
+        return h
+    old, new = h[:-keep], h[-keep:]
+    out, looks = [], 0
+    for line in old:
+        if line.startswith("(pose estimate"):
+            continue
+        if line.startswith("look -> picture"):
+            looks += 1
+            continue
+        m = re.match(r"\[(\d+)\] ([\w\[\]]+)\(([^)]*)\) -> (\w+): (.*)$", line, re.S)
+        if m:
+            it, skill, val, status, msg = m.groups()
+            msg = msg.split(" | lidar after this:")[0].strip()
+            base = "[%s] %s(%s) -> %s" % (it, skill, val, status)
+            name = skill.split("[")[0]
+            cap = 300 if name in KEEP_LONG else (160 if status != "ok" else 0)
+            out.append(base + (": " + (msg[:cap] + ("..." if len(msg) > cap else "")) if cap else ""))
+        elif line.startswith("[system]"):
+            out.append(line[:160] + ("..." if len(line) > 160 else ""))
+        else:
+            out.append(line[:160])
+    if looks:
+        out.append("(earlier you also took %d picture(s) with look)" % looks)
+    return out + new
 
 
 class Agent:
@@ -273,8 +342,11 @@ class Agent:
         self.run_dir, self.log = run_dir, log
         self.should_cancel = should_cancel or (lambda: False)
         self.units = {s["name"]: s["parameter"].get("unit", "") for s in catalog if "parameter" in s}
-        full_catalog = list(catalog) + [LOOK]
+        full_catalog = list(catalog) + [LOOK, FIND]
+        self.units["find_object"] = "deg"
         self.system = SYSTEM_PROMPT.format(max_actions=max_actions, catalog=json.dumps(full_catalog, ensure_ascii=False))     # PLNY prompt
+        if primitives.ENABLED:     # PRIMITIVES_PATCH: AI vidi len jednoduche primitiva (CHAPPIE_PRIMITIVES=0 vrati povodny prompt)
+            self.system = primitives.build_system(catalog, LOOK, max_actions)
         self._mode_note = []
         self._task = ""
 
@@ -329,9 +401,62 @@ class Agent:
         t = self._lidar_text()
         return self._pose_text(pose) + (("; " + t) if t else "")
 
+    @staticmethod
+    def _name(a):
+        """meno akcie aj s argumentom (find_object[blue])"""
+        return a["skill"] + ("[%s]" % a["arg"] if a.get("arg") else "")
+
+    def _find_object(self, a, pose):
+        """FIND_PATCH: hladaj predmet danej farby (otaca sa po 45 st.), vycentruj ho; vrati dict ako robot.execute"""
+        color = a.get("arg", "")
+        n = int(float(a["value"]) // 45.0)
+        turned, det = 0.0, None
+        for k in range(n + 1):
+            if self.should_cancel():
+                return {"success": False, "status": "cancelled", "message": "find_object bol zruseny.", "value_done": turned}
+            try:
+                det = perception.detect(self.camera.snapshot(), color)
+            except Exception as e:
+                return {"success": False, "status": "error", "message": "find_object: camera/detector error: %s" % e, "value_done": turned}
+            if det.get("found") or k == n:
+                break
+            r = self.robot.execute("turn_left", 45.0)
+            self._update_pose(pose, "turn_left", 45.0, r.get("value_done", 0.0), bool(r.get("success")))
+            if not r.get("success"):
+                return {"success": False, "status": r.get("status", "failed"), "value_done": turned,
+                        "message": "find_object: the search turn failed (%s). %s" % (r.get("status"), r.get("message", ""))}
+            turned += float(r.get("value_done", 45.0))
+        if not det or not det.get("found"):
+            return {"success": False, "status": "not_found", "value_done": turned,
+                    "message": "find_object: no %s object seen after turning %d deg (the colour detector found nothing). The object may be hidden "
+                               "behind something or the colour name is wrong (red/orange and purple/pink overlap): look at the picture; "
+                               "do not repeat the same search from here." % (color, round(turned))}
+        for _ in range(2):          # vycentrovanie
+            pct = float(det["percent"])
+            if abs(pct - 50.0) <= 5.0:
+                break
+            r = self.robot.execute("turn_towards", round(max(1.0, min(100.0, pct)), 1))
+            if not r.get("success"):
+                break
+            deg = float(r.get("value_done", 0.0))
+            self._update_pose(pose, "turn_right" if pct > 50 else "turn_left", deg, deg, True)
+            try:
+                d2 = perception.detect(self.camera.snapshot(), color)
+            except Exception:
+                break
+            if not d2.get("found"):
+                break
+            det = d2
+        pct = float(det["percent"])
+        where = "straight ahead" if abs(pct - 50.0) <= 8.0 else ("at %.0f %% on the ruler" % pct)
+        return {"success": True, "status": "ok", "value_done": turned,
+                "message": "find_object: found a %s object after turning %d deg; it is %s (width %.0f %% of the picture). "
+                           "If it is straight ahead, walk_to_object 50 goes to it; check in the picture that it is the right object "
+                           "(the colour may belong to several objects)." % (color, round(turned), where, det.get("width_pct", 0.0))}
+
     def label(self, a):
         if a["skill"] in self.units:
-            return ("%s %g %s" % (a["skill"], a["value"], self.units[a["skill"]])).strip()
+            return ("%s %g %s" % (self._name(a), a["value"], self.units[a["skill"]])).strip()
         return a["skill"]
 
     def run(self, task, feedback=None):
@@ -345,10 +470,14 @@ class Agent:
         pics = []             # snimky z 'look' z predchadzajuceho planu: (bytes, mime, popis)
         last_look = False
         mode, groups = prompt_select.select(task)           # PROMPT_PATCH: kratky prompt len pre jasne jednoduche ulohy
+        if primitives.ENABLED:     # PRIMITIVES_PATCH: vzdy jeden (primitivny) prompt, bez skracovania podla zadania
+            mode, groups = "full", set(prompt_select.GROUPS)
         system = self.system if mode == "full" else prompt_select.build_system(
             SYSTEM_PROMPT, self.catalog, LOOK, self.max_actions, mode, groups)
         self._task = task
         self._mode_note = [mode + (" (" + ",".join(sorted(groups)) + ")" if mode != "full" else "")]
+        if primitives.ENABLED:     # PRIMITIVES_PATCH
+            self._mode_note = ["primitives"]
         known = {s["name"] for s in self.catalog} | {"look"}
 
         def escalate(why, it):
@@ -377,7 +506,7 @@ class Agent:
                 images.append((cur, mime, "CURRENT VIEW (taken now, after all your previous actions; %s)" % self._where(pose)))
             images = images[-self.MAX_IMAGES:]
             user = "TASK: %s\n\nPrevious actions and results:\n%s\n\nIteration %d of %d. You receive %d image(s). " \
-                   "Look at them and decide." % (task, "\n".join(history[-40:]) or "(none yet)", it,
+                   "Look at them and decide." % (task, "\n".join(compact_history(history)) or "(none yet)", it,
                                                   self.max_iterations, len(images))
             lt = self._lidar_text()
             if lt:
@@ -479,12 +608,15 @@ class Agent:
                     last_look = True
                     continue
                 last_look = False
-                res = self.robot.execute(a["skill"], a["value"])
+                if a["skill"] == "find_object":          # FIND_PATCH
+                    res = self._find_object(a, pose)
+                else:
+                    res = self.robot.execute(a["skill"], a["value"])
                 steps_done += 1
                 msg = str(res.get("message", ""))
                 if a["skill"] in MOVE_SKILLS or a["skill"].startswith("turn_"):
                     self._update_pose(pose, a["skill"], a["value"], res.get("value_done", 0.0), bool(res.get("success")))
-                history.append("[%d] %s(%g) -> %s: %s%s" % (it, a["skill"], a["value"], res.get("status"), msg,
+                history.append("[%d] %s(%g) -> %s: %s%s" % (it, self._name(a), a["value"], res.get("status"), msg,
                                                            self._lidar_suffix(a)))
                 if not res.get("success"):
                     history.append("(pose estimate now: %s)" % self._pose_text(pose))

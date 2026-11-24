@@ -38,6 +38,10 @@ GROUPS = {
         "skills": ["go_around_obstacle", "follow_wall"],
         "bullets": ["- go_around_obstacle:", "- Following a wall:"],
     },
+    "find": {
+        "skills": ["find_object"],
+        "bullets": ["- find_object finds"],
+    },
 }
 
 # jednoducha cinnost, ktoru prompt bez volitelnych skupin zvladne (po odstraneni diakritiky, zaciatky slov)

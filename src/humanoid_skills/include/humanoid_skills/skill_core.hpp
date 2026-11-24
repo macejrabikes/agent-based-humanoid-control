@@ -20,7 +20,7 @@ namespace skills
 {
 
 enum class Kind {Stop, Walk, Turn, Arms, Wait, Gesture, Look, Getup, GoTo, Place, Where, Push, Door, Room,
-  ToObj, Around, Follow};   // SKILLS2_PATCH, NAV_PATCH, OPEN_PATCH, SKILLS3_PATCH
+  ToObj, Around, Follow, Check};   // SKILLS2_PATCH, NAV_PATCH, OPEN_PATCH, SKILLS3_PATCH, DOORCHECK_PATCH
 
 struct SkillSpec
 {
@@ -192,6 +192,200 @@ inline LidarSectors lidar_from_cloud(const unsigned char * data, size_t n, size_
   }
   return r;
 }
+
+// DOORCHECK_PATCH: check_door - overenie "presiel som cez dvere?" z LiDARu a odometrie. Ziadny pohyb, iba meranie a text pre AI.
+//
+// Jeden sken nestaci (dvere za chrbtom vidi aj robot, ktory sa v hale len otocil), preto si skill pamata dvere:
+//   1. volanie, ked su dvere pred robotom (LiDAR ich najde): zapamata si stred a normalu dveri v suradniciach odometrie -> NOT_PASSED
+//   2. volanie po prechode: robot je na druhej strane roviny dveri a pri otvore -> PASSED
+// Sablony (bez zavislosti na skill_core.hpp): Bins = LidarBins (r, x, y po 2 stupnoch, index 0 = za robotom, 90 = dopredu, + = vlavo),
+// find_fn(bins, fov_deg) vrati vector otvorov (cx, cy, nx, ny, width, dist, bearing) - v skill_core.hpp je to find_openings().
+namespace door_check
+{
+template<class Bins>
+Bins rotate180(const Bins & b)       // pohlad dozadu: rovnaky detektor najde otvor, cez ktory robot prisiel
+{
+  Bins o = b;
+  const int n = static_cast<int>(b.r.size());
+  for (int i = 0; i < n; ++i) {
+    const int k = (i + n / 2) % n;
+    o.r[i] = b.r[k];
+    o.x[i] = -b.x[k];
+    o.y[i] = -b.y[k];
+  }
+  return o;
+}
+
+// najblizsie meranie v okne +-half_deg okolo smeru center_deg (0 = dopredu, + = vlavo); 99 = nic
+template<class Bins>
+double window_min(const Bins & b, double center_deg, double half_deg)
+{
+  const int n = static_cast<int>(b.r.size());
+  const double step = 360.0 / n;
+  double m = 99.0;
+  for (int i = 0; i < n; ++i) {
+    double a = i * step - 180.0 - center_deg;
+    while (a > 180.0) {a -= 360.0;}
+    while (a < -180.0) {a += 360.0;}
+    if (a >= -half_deg && a <= half_deg && b.r[i] < m) {m = b.r[i];}
+  }
+  return m;
+}
+
+struct Gap            // otvor v suradniciach robota (x dopredu, y dolava)
+{
+  bool found = false;
+  double cx = 0, cy = 0, nx = 1, ny = 0, width = 0, dist = 0, bearing = 0;
+};
+
+struct Memory         // zapamatane dvere v suradniciach odometrie
+{
+  bool valid = false;
+  double cx = 0, cy = 0, nx = 1, ny = 0, width = 0;
+};
+
+struct Report
+{
+  double front = 99, back = 99, left = 99, right = 99;
+  Gap ahead, behind;
+  bool in_gap = false, remembered = false, replaced = false;
+  double plane_d = 0, lateral = 0;         // poloha robota voci zapamatenym dveram: za rovinou (+) / pred nou (-), bokom od stredu
+  double mem_dist = 0, mem_bearing = 0;    // zapamatane dvere z pohladu robota
+  std::string verdict;
+};
+
+template<class Ops>
+Gap pick(const Ops & ops, double max_off_deg, double max_dist)
+{
+  Gap g;
+  double best = 1e9;
+  for (const auto & op : ops) {
+    if (std::fabs(op.bearing) > max_off_deg || op.dist > max_dist) {continue;}
+    const double score = std::fabs(op.bearing) + 10.0 * op.dist;
+    if (score < best) {
+      best = score;
+      g.found = true; g.cx = op.cx; g.cy = op.cy; g.nx = op.nx; g.ny = op.ny; g.width = op.width; g.dist = op.dist; g.bearing = op.bearing;
+    }
+  }
+  return g;
+}
+
+inline void to_world(double ox, double oy, double yaw, double px, double py, double & wx, double & wy)
+{
+  wx = ox + px * std::cos(yaw) - py * std::sin(yaw);
+  wy = oy + px * std::sin(yaw) + py * std::cos(yaw);
+}
+
+template<class Bins, class FindFn>
+Report analyse(const Bins & bins, FindFn find_fn, double ox, double oy, double oyaw, Memory & mem)
+{
+  Report r;
+  r.front = window_min(bins, 0.0, 10.0);
+  r.back = window_min(bins, 180.0, 10.0);
+  r.left = window_min(bins, 90.0, 10.0);
+  r.right = window_min(bins, -90.0, 10.0);
+  r.ahead = pick(find_fn(bins, 110.0), 60.0, 6.0);
+  r.behind = pick(find_fn(rotate180(bins), 110.0), 50.0, 4.0);
+  r.in_gap = r.left <= 1.8 && r.right <= 1.8 && (r.left + r.right) >= 0.9 && (r.left + r.right) <= 3.5;
+  if (mem.valid && std::hypot(mem.cx - ox, mem.cy - oy) > 15.0) {mem.valid = false;}      // stare dvere z ineho konca sveta
+  const double cs = std::cos(oyaw), sn = std::sin(oyaw);
+  bool passed = false;
+  if (mem.valid) {
+    const double dx = ox - mem.cx, dy = oy - mem.cy;
+    r.remembered = true;
+    r.plane_d = dx * mem.nx + dy * mem.ny;                 // normala smeruje cez dvere: + = uz za dverami
+    r.lateral = -dx * mem.ny + dy * mem.nx;
+    const double rx = (mem.cx - ox) * cs + (mem.cy - oy) * sn, ry = -(mem.cx - ox) * sn + (mem.cy - oy) * cs;
+    r.mem_dist = std::hypot(rx, ry);
+    r.mem_bearing = std::atan2(ry, rx) * 180.0 / M_PI;
+    passed = r.plane_d > 0.3 && std::fabs(r.lateral) < 0.5 * mem.width + 0.8;
+  }
+  if (r.ahead.found) {          // dvere pred robotom: zapamataj ich (ak sme prave neprešli inymi, stare sa nahradia)
+    double wx, wy;
+    to_world(ox, oy, oyaw, r.ahead.cx, r.ahead.cy, wx, wy);
+    const double nwx = r.ahead.nx * cs - r.ahead.ny * sn, nwy = r.ahead.nx * sn + r.ahead.ny * cs;
+    const bool same = mem.valid && std::hypot(wx - mem.cx, wy - mem.cy) < 0.8;
+    r.replaced = mem.valid && !same;
+    mem.valid = true; mem.cx = wx; mem.cy = wy; mem.nx = nwx; mem.ny = nwy; mem.width = r.ahead.width;
+  }
+  if (passed) {
+    r.verdict = "PASSED";
+  } else if (r.in_gap) {
+    r.verdict = "IN_DOORWAY";
+  } else if (r.ahead.found) {
+    r.verdict = "NOT_PASSED";
+  } else if (r.remembered && r.plane_d > 0.3) {
+    r.verdict = "UNSURE";                 // za rovinou dveri, ale ďaleko od otvoru (obisiel stenu?)
+  } else if (r.remembered) {
+    r.verdict = "NOT_PASSED";
+  } else if (r.behind.found) {
+    r.verdict = "UNSURE";                 // dvere su za chrbtom, ale nevidel som ich pred prechodom
+  } else {
+    r.verdict = "NO_DOOR_SEEN";
+  }
+  return r;
+}
+
+inline std::string num(double v, int prec)       // bez snprintf/iomanip: hlavicka nepotrebuje ziadne dalsie #include
+{
+  long long scale = 1;
+  for (int i = 0; i < prec; ++i) {scale *= 10;}
+  const long long q = std::llround(std::fabs(v) * static_cast<double>(scale));
+  std::string s = std::to_string(q / scale);
+  if (prec > 0) {
+    std::string f = std::to_string(q % scale);
+    while (static_cast<int>(f.size()) < prec) {f = "0" + f;}
+    s += "." + f;
+  }
+  return (v < 0 && q != 0) ? "-" + s : s;
+}
+
+inline std::string dist_text(double d) {return d > 20.0 ? std::string(">20") : num(d, 1);}
+
+inline std::string dir_text(double bearing)
+{
+  if (std::fabs(bearing) < 4.0) {return "straight ahead";}
+  if (std::fabs(bearing) > 120.0) {return "behind the robot";}
+  return num(std::fabs(bearing), 0) + " deg to the " + (bearing > 0 ? "left" : "right");
+}
+
+inline std::string gap_text(const Gap & g, bool with_dir = true)
+{
+  return "a doorway " + num(g.width, 1) + " m wide, " + num(g.dist, 1) + " m away" + (with_dir ? ", " + dir_text(g.bearing) : std::string());
+}
+
+inline std::string text(const Report & r)
+{
+  std::string m = "check_door: " + r.verdict + ". ";
+  if (r.verdict == "PASSED") {
+    m += "You went through the doorway that was remembered earlier: the robot is " + num(r.plane_d, 1) + " m behind the door line and " +
+         num(std::fabs(r.lateral), 1) + " m off the door centre.";
+    if (r.ahead.found) {m += " Another doorway is now ahead (" + gap_text(r.ahead) + "); it is remembered as the new door.";}
+  } else if (r.verdict == "IN_DOORWAY") {
+    m += "Walls are close on both sides (left " + dist_text(r.left) + " m, right " + dist_text(r.right) +
+         " m): the robot stands in the doorway (or in a narrow corridor). Walk on forward, then call check_door again.";
+  } else if (r.verdict == "NOT_PASSED") {
+    if (r.ahead.found) {
+      m += "The LiDAR sees " + gap_text(r.ahead) + " AHEAD. The door is remembered; walk through it and call check_door again.";
+    } else {
+      m += "The remembered doorway has not been passed yet (" + num(r.mem_dist, 1) + " m away, " + dir_text(r.mem_bearing) + "). Turn towards it and walk through.";
+    }
+  } else if (r.verdict == "UNSURE") {
+    if (r.remembered) {
+      m += "The robot is " + num(r.plane_d, 1) + " m beyond the remembered door line but " + num(std::fabs(r.lateral), 1) +
+           " m beside the door centre: it probably did NOT go through the opening. Check the picture.";
+    } else {
+      m += "The LiDAR sees " + gap_text(r.behind, false) + " BEHIND the robot, but no door was remembered (call check_door while the door is in front of you, "
+           "before walking through): it cannot tell whether you came through it. Decide from the picture and from what you did.";
+    }
+  } else {
+    m += "The LiDAR sees no doorway ahead or behind (it may be too far, hidden or a solid wall). Decide from the picture.";
+  }
+  m += " LIDAR: front " + dist_text(r.front) + ", back " + dist_text(r.back) + ", left " + dist_text(r.left) + ", right " + dist_text(r.right) +
+       " m. Compare with the new camera picture (a new room looks different).";
+  return m;
+}
+}  // namespace door_check
 
 // OPEN_PATCH: otvor v stene (dvere, prechod) najdeny v LiDAR sken-e. Suradnice v systeme robota (x dopredu, y dolava).
 struct Opening
@@ -487,6 +681,12 @@ public:
       "Use it for 'walk along the wall to its end'. The result says why it stopped and gives the LiDAR distances. Fails with no_wall if there is no straight wall at "
       "the side (first walk_to_obstacle and turn 90 degrees so that the wall is at the side) and with blocked if the robot gets stuck. Robot must stand with arms down.";
     add(s);
+    s = {}; s.name = "check_door"; s.kind = K::Check; s.has_value = false;      // DOORCHECK_PATCH
+    s.description = "Does NOT move. Uses the LiDAR to check a doorway (a gap in a wall 0.9 to 3.5 m wide) and answers: PASSED (the robot went through the doorway that "
+      "check_door saw and remembered before), IN_DOORWAY (the robot stands in it), NOT_PASSED (the doorway is still ahead), UNSURE or NO_DOOR_SEEN. Call it while the "
+      "door is in front of the robot (it measures and remembers the door) and again after you walked through. The answer also gives the width and distance of the door "
+      "and the LiDAR distances front, back, left and right. Always compare it with the camera picture. Robot must stand with arms down.";
+    add(s);
     s = {}; s.name = "wait"; s.kind = K::Wait; s.has_value = true; s.unit = "s";
     s.vmin = 0.1; s.vmax = 30; s.vdef = 1.0; s.description = "Pocka dany pocet sekund."; add(s);
     for (auto & k : specs_) {
@@ -565,6 +765,11 @@ public:
     if (spec->needs_hands && !s.have_hands) {
       return fail(res, "no_hands", "Gesto '" + name + "' potrebuje robota s prstami (simulacia musi bezat s with_hands:=true). "
         "The robot has no hands with fingers: this gesture is not possible, use another skill (e.g. wave).");
+    }
+    if (spec->kind == Kind::Check) {     // DOORCHECK_PATCH
+      if (!s.have_odom) {return fail(res, "no_odom", "Nemam data z odometrie (/chappie/odom), neviem urcit polohu.");}
+      if (!s.have_lidar) {return fail(res, "no_lidar", "Nemam cerstve data z lidaru (/lidar/points), neviem hladat dvere.");}
+      if (arms_up_) {return fail(res, "arms_up", "Ruky su hore a lidar by videl ich - najprv arms_down.");}
     }
     if (spec->kind == Kind::ToObj || spec->kind == Kind::Around || spec->kind == Kind::Follow) {     // SKILLS3_PATCH
       if (!s.have_odom) {return fail(res, "no_odom", "Nemam data z odometrie (/chappie/odom), neviem urcit polohu.");}
@@ -827,6 +1032,9 @@ public:
       case Kind::Follow:
         follow_(o, s, dt);
         break;
+      case Kind::Check:
+        check_(o, s, dt);
+        break;
     }
     if (!o.finished && cur_.kind != Kind::Stop && t_ > timeout_()) {
       std::string tmsg = "Skill " + cur_.name + " trval prilis dlho.";
@@ -870,6 +1078,7 @@ private:
       case Kind::ToObj: return 60.0;
       case Kind::Around: return 100.0;
       case Kind::Follow: return 2.0 * value_ / p_.s3_speed + 15.0;
+      case Kind::Check: return 5.0;
       default: return 1e9;
     }
   }
@@ -1847,7 +2056,7 @@ private:
       if (std::fabs(herr) < 0.06) {
         settle_t_ += dt;
         if (settle_t_ >= p_.settle_s) {
-          const double d = corridor_(s.bins, 0.45, 0.0);
+          const double d = corridor_(s.bins, 0.30, 0.0);
           if (!s.have_lidar || d > 8.0) {
             finish_(o, false, "no_object", "walk_to_object: after turning " + fx(std::fabs(a3_turn_deg_), 0) + " deg " + (a3_turn_deg_ > 0 ? "right" : "left") +
               " the LiDAR sees nothing straight ahead within 8 m (front " + fmt_dist(s.lid_front) + " m). The object may be too low or too far for the LiDAR, "
@@ -1863,7 +2072,7 @@ private:
     } else if (a3_ph_ == 1) {                            // 2) chod rovno k predmetu
       o.state = "walking_to_object";
       if (!s.have_lidar || arms_up_) {finish_(o, false, "no_lidar", "Stratil som data z lidaru, zastavujem.", s); return;}
-      const double d = corridor_(s.bins, 0.45, 0.0);
+      const double d = corridor_(s.bins, 0.30, 0.0);
       if (d < 90.0) {a3_d_ = d; a3_fwd_seen_ = fwd; a3_lost_t_ = 0.0;} else {a3_lost_t_ += dt;}
       if (a3_lost_t_ > 1.0 || fwd > 8.0) {
         finish_(o, false, "no_object", "walk_to_object: lost the object on the LiDAR after " + fx(fwd, 1) + " m. Look at the picture and replan.", s);
@@ -1886,7 +2095,7 @@ private:
       o.state = "settling";
       settle_t_ += dt;
       if (settle_t_ >= p_.settle_s && v_cur_ < 0.05) {
-        const double d = corridor_(s.bins, 0.45, 0.0);
+        const double d = corridor_(s.bins, 0.30, 0.0);
         if (d < 90.0 && d - p_.stop_dist > 0.12 && corrections_ < 2 && s.lid_front > p_.block_dist) {
           ++corrections_; a3_ph_ = 1; a3_d_ = d; a3_fwd_seen_ = fwd; stuck_t_ = 0.0; stuck_d0_ = fwd;
         } else {
@@ -2052,6 +2261,15 @@ private:
     o.vy = vy_cur_;
     o.wz = w_cur_;
   }
+
+  // ---- DOORCHECK_PATCH: check_door - bez pohybu: najde dvere v LiDARe, zapamata si ich a po prechode povie PASSED / NOT_PASSED / ...
+  void check_(Output & o, const Sensors & s, double /*dt*/)
+  {
+    const door_check::Report rep = door_check::analyse(
+      s.bins, [](const LidarBins & b, double fov) {return find_openings(b, 0.9, 3.5, 6.0, fov);}, s.ox, s.oy, s.oyaw, door_mem_);
+    finish_(o, true, "ok", door_check::text(rep), s);
+  }
+  door_check::Memory door_mem_;
 
   // SKILLS3_PATCH: stav
   int a3_ph_ = 0, a3_side_ = 1;

@@ -57,3 +57,17 @@ Skill je jednoduchá, overená akcia, ktorú robot vie vykonať. AI agent sklad�
 | `follow_wall` | max. dlzka v m (0,5-15) | ide popri stene po boku robota (odstup a rovnobeznost z LiDARu), kym stena neskonci, nepride roh/prekazka alebo neprejde value; chyby `no_wall`, `blocked` |
 
 Test bez ROS a Gazeba: `g++ -std=c++17 -O1 -I src/humanoid_skills/include tools/test_skills3_sim.cpp -o /tmp/test_s3 && /tmp/test_s3`.
+
+### Primitiva (PRIMITIVES_PATCH)
+
+Robot ma pre AI len jednoduche funkcie, premyslanie a planovanie robi AI. Zlozene skills vyssie ostavaju v kode ako archiv, ale agent ich
+nevidi (`CHAPPIE_PRIMITIVES=0` ich vrati, na porovnanie).
+
+| skupina | skills |
+|---|---|
+| pohyb | `walk_forward`, `walk_backward`, `step_left`, `step_right`, `turn_left`, `turn_right` |
+| postoj | `stand`, `stop`, `get_up`, `wait` |
+| ruky a gesta | `arms_down`, `raise_right_arm`, `raise_left_arm`, `raise_both_arms`, `wave`, `wave_left`, `wave_both`, `clap`, `bow`, `thumbs_up`, `cheer`, `salute`, `point_forward`, `dance` |
+| senzory | `look` (kamera), `where_am_i` (odometria), `check_door` (prešiel som cez dvere? LiDAR: PASSED / IN_DOORWAY / NOT_PASSED / UNSURE / NO_DOOR_SEEN) |
+
+Test: `g++ -std=c++17 -O1 -I src/humanoid_skills/include tools/test_door_check.cpp -o /tmp/test_dc && /tmp/test_dc`.

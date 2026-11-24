@@ -1,3 +1,4 @@
+#include <cstdlib>   // LIMITS_PATCH
 // motion_skills: pohybove skills robota (C++), ROS2 action server /skills/execute.
 //
 //   ros2 action send_goal /skills/execute humanoid_interfaces/action/Skill "{skill: 'walk_forward', value: 1.0}" --feedback
@@ -222,6 +223,14 @@ private:
     const rclcpp::Time t = now();
     double dt = (t - last_tick_).seconds();
     last_tick_ = t;
+    {      // LIMITS_PATCH: pomaly Gazebo: casovace skillov bezia v "simulacnych" sekundach (export CHAPPIE_TIME_SCALE=0.3)
+      static const double ts = [] {
+        const char * e = std::getenv("CHAPPIE_TIME_SCALE");
+        const double v = e ? std::atof(e) : 1.0;
+        return (v >= 0.05 && v <= 1.0) ? v : 1.0;
+      }();
+      dt *= ts;
+    }
     dt = std::min(std::max(dt, 0.001), 0.1);
 
     skills::Output out;

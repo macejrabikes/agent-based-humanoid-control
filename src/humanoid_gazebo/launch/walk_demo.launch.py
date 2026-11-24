@@ -18,7 +18,7 @@ from launch.actions import (DeclareLaunchArgument, ExecuteProcess,
                             IncludeLaunchDescription, TimerAction)
 from launch.conditions import IfCondition, LaunchConfigurationEquals
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -44,6 +44,7 @@ def generate_launch_description():
             'with_hands': LaunchConfiguration('with_hands'),
             'weld_upper': LaunchConfiguration('weld_upper'),
             'world': LaunchConfiguration('world'),
+            'headless': LaunchConfiguration('headless'),
         }.items())
 
     # politika chodze: C++ (predvolene) alebo Python (PyTorch z virtualneho prostredia)
@@ -106,16 +107,18 @@ def generate_launch_description():
             default_value=os.path.expanduser('~/ros_torch_venv/bin/python')),
         DeclareLaunchArgument('with_hands', default_value='false',
                               description='true = robot ma prsty (Dex3)'),
+        DeclareLaunchArgument('headless', default_value='false',
+                              description='true = Gazebo bez okna (rychlejsie), follow sa ignoruje'),
         DeclareLaunchArgument('follow', default_value='true',
                               description='kamera sleduje robota'),
         DeclareLaunchArgument('auto_enable', default_value='true',
                               description='po starte automaticky zapnut politiku'),
         sim,
         TimerAction(period=12.0, actions=[policy_cpp, policy_py] + arm_actions + skills_actions),
-        TimerAction(period=14.0, condition=IfCondition(LaunchConfiguration('follow')),
+        TimerAction(period=14.0, condition=IfCondition(PythonExpression(["'", LaunchConfiguration('follow'), "' == 'true' and '", LaunchConfiguration('headless'), "' != 'true'"])),
                     actions=[
                         gz_service('/gui/follow', 'gz.msgs.StringMsg', 'data: "chappie"')]),
-        TimerAction(period=15.0, condition=IfCondition(LaunchConfiguration('follow')),
+        TimerAction(period=15.0, condition=IfCondition(PythonExpression(["'", LaunchConfiguration('follow'), "' == 'true' and '", LaunchConfiguration('headless'), "' != 'true'"])),
                     actions=[
                         gz_service('/gui/follow/offset', 'gz.msgs.Vector3d',
                                    'x: -2.2 y: 0.0 z: 1.2')]),
