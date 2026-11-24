@@ -2,10 +2,10 @@
 """gen_world.py: generator svetov pre Gazebo (Chappie) z ASCII mapy alebo nahodne.
 
 Pouzitie (z korena repozitara):
-  python3 tools/gen_world.py --ascii maps/izba.txt --name izba          # svet z ASCII mapy
-  python3 tools/gen_world.py --random rooms --seed 3 --name rooms_3     # nahodne izby s dverami
-  python3 tools/gen_world.py --random maze --seed 5 --name maze_5       # bludisko
-  python3 tools/gen_world.py --random warehouse --seed 1 --name sklad   # sklad s regalmi
+  python3 src/tools/gen_world.py --ascii src/maps/izba.txt --name izba          # svet z ASCII mapy
+  python3 src/tools/gen_world.py --random rooms --seed 3 --name rooms_3     # nahodne izby s dverami
+  python3 src/tools/gen_world.py --random maze --seed 5 --name maze_5       # bludisko
+  python3 src/tools/gen_world.py --random warehouse --seed 1 --name sklad   # sklad s regalmi
 Potom spusti simulaciu so svetom:
   ros2 launch humanoid_gazebo walk_demo.launch.py world:=rooms_3.sdf
 

@@ -3,11 +3,11 @@
 
 Bezi u teba (kluce citam z ~/.chappie_keys cez llm_backends.load_keys, nikdy ich nevypisuje).
 Pouzitie:
-  python3 tools/probe_limits.py                    # rychly prehlad: 1 poziadavka na sluzbu + hlavicky s limitmi
-  python3 tools/probe_limits.py --rpm              # zmeria limit za minutu (burst tak dlho, kym pride 429)
-  python3 tools/probe_limits.py --size             # zvacsuje prompt (1k, 4k, 16k, 64k tokenov), kym sluzba neodmietne
-  python3 tools/probe_limits.py --images           # zvacsuje pocet obrazkov v jednej poziadavke (1,2,4,8,16,32)
-  python3 tools/probe_limits.py --daily 300 --yes  # POZOR: spotrebuje denny limit sluzby (az 300 poziadaviek)
+  python3 src/tools/probe_limits.py                    # rychly prehlad: 1 poziadavka na sluzbu + hlavicky s limitmi
+  python3 src/tools/probe_limits.py --rpm              # zmeria limit za minutu (burst tak dlho, kym pride 429)
+  python3 src/tools/probe_limits.py --size             # zvacsuje prompt (1k, 4k, 16k, 64k tokenov), kym sluzba neodmietne
+  python3 src/tools/probe_limits.py --images           # zvacsuje pocet obrazkov v jednej poziadavke (1,2,4,8,16,32)
+  python3 src/tools/probe_limits.py --daily 300 --yes  # POZOR: spotrebuje denny limit sluzby (az 300 poziadaviek)
   --service gemini|mistral|groq|openrouter (viackrat)  obmedzi test na vybrane sluzby;  --all = --rpm --size --images
 Vysledky sa ulozia do ~/.chappie_limits.json a na konci sa vypisu odporucane riadky pre ~/.chappie_keys
 (napr. GEMINI_DAILY_LIMIT=250), ktore pouziva retaz AI na vypis 'zostava'.
@@ -26,7 +26,7 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WS = os.path.expanduser(os.environ.get("CHAPPIE_WS", "~/agent-based-humanoid-control"))
-for p in (os.path.join(WS, "src/humanoid_agent/humanoid_agent"), os.path.join(HERE, "../src/humanoid_agent/humanoid_agent")):
+for p in (os.path.join(WS, "src/humanoid_agent/humanoid_agent"), os.path.join(HERE, "../humanoid_agent/humanoid_agent")):
     if os.path.isdir(p):
         sys.path.insert(0, p)
 import llm_backends as L  # noqa: E402

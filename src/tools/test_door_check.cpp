@@ -1,6 +1,6 @@
 // Test door_check.hpp na simulovanom LiDARe (ray casting v 2D svete, bez ROS a Gazeba).
 //   mini (bez workspace):  python3 ../make_mini_core.py && g++ -std=c++17 -O1 -Wall -Wextra -DMINI_CORE -I . -I .. test_door_check.cpp -o /tmp/test_dc && /tmp/test_dc
-//   v workspace (po add_primitives.py): g++ -std=c++17 -O1 -Wall -Wextra -I src/humanoid_skills/include tools/test_door_check.cpp -o /tmp/test_dc && /tmp/test_dc
+//   v workspace (po add_primitives.py): g++ -std=c++17 -O1 -Wall -Wextra -I src/humanoid_skills/include src/tools/test_door_check.cpp -o /tmp/test_dc && /tmp/test_dc
 #include <cmath>
 #include <cstdio>
 #include <string>

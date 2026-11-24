@@ -199,11 +199,11 @@ class App:
             os.makedirs(self.fake_dir, exist_ok=True)
             os.makedirs(self.runs_dir, exist_ok=True)
         # nastroje projektu (hladaju sa vedla GUI: z5, z7, z8, alebo v repozitari)
-        self.gen_script = first_existing([os.path.join(self.ws, "tools/gen_world.py"), os.path.join(PROJ, "z5/gen_world.py"),
+        self.gen_script = first_existing([os.path.join(self.ws, "src/tools/gen_world.py"), os.path.join(PROJ, "z5/gen_world.py"),
                                           os.path.join(HERE, "gen_world.py")])
-        self.bench_script = first_existing([os.path.join(self.ws, "tools/benchmark/run_benchmark.py"),
+        self.bench_script = first_existing([os.path.join(self.ws, "src/tools/benchmark/run_benchmark.py"),
                                             os.path.join(PROJ, "z7/benchmark/run_benchmark.py"), os.path.join(HERE, "run_benchmark.py")])
-        self.tasks_file = first_existing([a.tasks_file, os.path.join(self.ws, "tools/benchmark/tasks.json"),
+        self.tasks_file = first_existing([a.tasks_file, os.path.join(self.ws, "src/tools/benchmark/tasks.json"),
                                           os.path.join(PROJ, "z7/benchmark/tasks.json"), os.path.join(HERE, "tasks.json")])
         prim_path = first_existing([os.path.join(self.ws, "src/humanoid_agent/humanoid_agent/primitives.py"),
                                     os.path.join(PROJ, "z8/primitives.py"), os.path.join(HERE, "primitives.py")])
@@ -234,7 +234,7 @@ class App:
 
     def _discover_maps(self):
         dirs = [os.path.join(PROJ, "z5/maps"), os.path.join(PROJ, "z7/benchmark/maps"), os.path.join(HERE, "maps"),
-                os.path.join(self.ws, "maps"), os.path.join(self.ws, "tools/benchmark/maps"), os.path.expanduser("~/chappie_maps")]
+                os.path.join(self.ws, "src/maps"), os.path.join(self.ws, "src/tools/benchmark/maps"), os.path.expanduser("~/chappie_maps")]
         dirs += [os.path.expanduser(d) for d in self.a.maps_dir]
         gen_dir = os.path.join(self.ws, "src/humanoid_gazebo/worlds")
         out, seen = [], set()
@@ -363,7 +363,7 @@ class App:
             env.update(CG_ASCII=m["path"], CG_NAME=name)
             map_text, label = m["text"], "Mapa " + m["name"]
         if env["CG_NAME"] and not env["CG_GEN"]:
-            self._sim_fail("Nenašiel som gen_world.py (očakávam ho v %s/tools alebo z5/)." % self.ws)
+            self._sim_fail("Nenašiel som gen_world.py (očakávam ho v %s/src/tools alebo z5/)." % self.ws)
             raise ValueError("chýba gen_world.py")
         extra = []
         for tok in shlex.split(str(o.get("extra") or "")):
@@ -663,7 +663,7 @@ class App:
     # ------------------------------------------------------------------ benchmark
     def bench_items(self, o):
         if not self.bench_script:
-            raise ValueError("Nenašiel som run_benchmark.py (z7/benchmark alebo tools/benchmark v repozitári).")
+            raise ValueError("Nenašiel som run_benchmark.py (z7/benchmark alebo src/tools/benchmark v repozitári).")
         label = str(o.get("label") or "").strip()
         tasks = str(o.get("tasks") or "").strip()
         world = str(o.get("world") or "arena").strip()

@@ -54,7 +54,7 @@ def generate_launch_description():
         condition=LaunchConfigurationEquals('policy_impl', 'cpp'))
     policy_py = ExecuteProcess(
         cmd=[LaunchConfiguration('venv_python'),
-             os.path.join(ws, 'tools', 'walk_policy.py')],
+             os.path.join(ws, 'src', 'tools', 'walk_policy.py')],
         additional_env={'CHAPPIE_CMD_TIMEOUT': '0.6'},
         output='screen',
         condition=LaunchConfigurationEquals('policy_impl', 'py'))

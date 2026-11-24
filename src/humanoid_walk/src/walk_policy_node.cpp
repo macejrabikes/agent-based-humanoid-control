@@ -9,7 +9,7 @@
 //   zapnuty            spusta politiku; pri zapnuti sa robot uvolni zo zaveska
 // Ak sa robot nakloni o viac ako ~65 stupnov, politika sa sama vypne.
 //
-// Funkcia je rovnaka ako tools/walk_policy.py (Python verzia), len bez PyTorchu.
+// Funkcia je rovnaka ako src/tools/walk_policy.py (Python verzia), len bez PyTorchu.
 #include <algorithm>
 #include <fstream>
 #include <map>

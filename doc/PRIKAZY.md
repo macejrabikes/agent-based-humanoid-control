@@ -11,7 +11,7 @@ Skutočnú prácu robia ROS 2 uzly v `src/`, skratky ich len spúšťajú. Kód 
 | `chappie_sim` | Spustí Gazebo so simuláciou, robotom, skills a agentom (`ros2 launch humanoid_gazebo walk_demo.launch.py`). Argumenty sa pripoja, napr. `chappie_sim world:=rooms_3.sdf follow:=false` |
 | `chappie_world TYP [seed]` | Vygeneruje svet a spustí v ňom simuláciu. Typy: `rooms`, `maze`, `warehouse` alebo súbor ASCII mapy. Príklad: `chappie_world maze 5` |
 | `chappie_teleop` | Ovládanie robota z klávesnice (WASD), balík `humanoid_teleop` |
-| `chappie_mujoco` | Záložné demo chôdze v MuJoCo (`mujoco_demo/mujoco_wasd_demo.py`) |
+| `chappie_mujoco` | Záložné demo chôdze v MuJoCo (`src/mujoco_demo/mujoco_wasd_demo.py`) |
 
 ## Ovládanie robota
 
@@ -45,5 +45,5 @@ Skutočnú prácu robia ROS 2 uzly v `src/`, skratky ich len spúšťajú. Kód 
 ros2 launch humanoid_gazebo walk_demo.launch.py           # = chappie_sim
 ros2 run humanoid_agent task_client "úloha"               # = chappie_task
 ros2 run humanoid_teleop wasd_teleop                      # = chappie_teleop
-python3 tools/gen_world.py --random rooms --seed 3 --name rooms_3
+python3 src/tools/gen_world.py --random rooms --seed 3 --name rooms_3
 ```

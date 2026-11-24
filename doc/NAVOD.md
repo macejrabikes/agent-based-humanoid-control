@@ -55,19 +55,19 @@ ros2 run humanoid_teleop wasd_teleop
 
 ## 6. Skills
 
-Chôdza (`walk_forward`, `walk_backward`, `step_left/right`, `walk_to_obstacle`), otáčanie (`turn_left/right`, `turn_towards`), `get_up`, `look_around`, gestá a pózy rúk, navigácia (`save_place`, `go_to_place`, `where_am_i`) a tlačenie (`push_forward`). Prechod dverami rieši `go_through_opening` (LiDAR nájde otvor v stene, robot sa vycentruje a prejde, sám hľadá dvere po izbe) a `search_room` (presun na ďalšie neprehľadané miesto izby, napr. na hľadanie predmetu); test bez ROS: `g++ -std=c++17 -O1 -I src/humanoid_skills/include tools/test_door_sim.cpp -o /tmp/test_door && /tmp/test_door`. Úplný katalóg je v `src/humanoid_skills/include/humanoid_skills/skill_core.hpp`.
+Chôdza (`walk_forward`, `walk_backward`, `step_left/right`, `walk_to_obstacle`), otáčanie (`turn_left/right`, `turn_towards`), `get_up`, `look_around`, gestá a pózy rúk, navigácia (`save_place`, `go_to_place`, `where_am_i`) a tlačenie (`push_forward`). Prechod dverami rieši `go_through_opening` (LiDAR nájde otvor v stene, robot sa vycentruje a prejde, sám hľadá dvere po izbe) a `search_room` (presun na ďalšie neprehľadané miesto izby, napr. na hľadanie predmetu); test bez ROS: `g++ -std=c++17 -O1 -I src/humanoid_skills/include src/tools/test_door_check.cpp -o /tmp/test_door && /tmp/test_door`. Úplný katalóg je v `src/humanoid_skills/include/humanoid_skills/skill_core.hpp`.
 
 ## 7. Iné svety (generátor)
 
-Základná aréna je `arena_big_walk.sdf`. Ďalšie svety vygeneruje `tools/gen_world.py` z ASCII mapy (`maps/`) alebo náhodne (`rooms`, `maze`, `warehouse`):
+Základná aréna je `arena_big_walk.sdf`. Ďalšie svety vygeneruje `src/tools/gen_world.py` z ASCII mapy (`src/maps/`) alebo náhodne (`rooms`, `maze`, `warehouse`):
 
 ```bash
 chappie_world rooms 3                  # náhodné izby so seedom 3 a spustenie simulácie
-python3 tools/gen_world.py --ascii maps/izba.txt --name izba
+python3 src/tools/gen_world.py --ascii src/maps/izba.txt --name izba
 chappie_sim world:=izba.sdf
 ```
 
-Popis znakov mapy je v hlavičke `tools/gen_world.py`.
+Popis znakov mapy je v hlavičke `src/tools/gen_world.py`.
 
 ## 8. Riešenie problémov
 

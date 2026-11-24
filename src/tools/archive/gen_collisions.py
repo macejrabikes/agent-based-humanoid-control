@@ -50,7 +50,7 @@ def resolve_mesh(filename, pkg_dir):
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     default_pkg = os.path.join(
-        here, '..', 'src', 'humanoid_description')
+        here, '..', '..', 'humanoid_description')
     ap = argparse.ArgumentParser()
     ap.add_argument('--pkg', default=default_pkg,
                     help='cesta k baliku humanoid_description')

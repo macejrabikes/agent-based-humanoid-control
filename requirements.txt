@@ -3,13 +3,13 @@
 
 # agent (humanoid_agent): obraz z kamery s pravítkom
 Pillow
-# nástroje a MuJoCo demo (tools/, mujoco_demo/)
+# nástroje a MuJoCo demo (src/tools/, src/mujoco_demo/)
 numpy
 lxml
 PyYAML
 mujoco
 trimesh
-# natrénovaná politika chôdze v Pythone (policy_impl:=py, mujoco_demo, tools/export_g1_policy.py)
+# natrénovaná politika chôdze v Pythone (policy_impl:=py, mujoco_demo, src/tools/export_g1_policy.py)
 torch
 
 # Systémové závislosti (nie sú v pip):

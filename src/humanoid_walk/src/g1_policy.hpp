@@ -1,6 +1,6 @@
 // G1Policy: predtrenovana politika chodze Unitree G1 bez LibTorch.
 // Siet: LSTM(47 -> 64), Linear(64 -> 32), ELU, Linear(32 -> 12); LSTM ma pamat (h, c).
-// Vahy citam z binarneho suboru, ktory vytvara tools/export_g1_policy.py.
+// Vahy citam z binarneho suboru, ktory vytvara src/tools/export_g1_policy.py.
 #pragma once
 
 #include <array>
